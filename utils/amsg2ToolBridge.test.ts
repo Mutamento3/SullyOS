@@ -466,7 +466,7 @@ describe('连发上限·本地排程闸', () => {
       activeMsg2Config: { enabled: true, maxUnansweredSends: 1, tasks: [selfTask('u1')] },
     });
     const reply = await executeAmsg2Tool('schedule_active_message', { send_at: future(1) }, deps);
-    expect(reply).toContain('连发上限是 1 条');
+    expect(reply).toContain('连发上限是 1 次');
     expect(ActiveMsgClient.scheduleCharacterTask).not.toHaveBeenCalled();
   });
 });

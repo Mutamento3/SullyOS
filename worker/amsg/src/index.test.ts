@@ -693,7 +693,7 @@ describe('连发上限（到点兜底闸）', () => {
   // 回归守卫：设置页的下拉给到 1–10，而连发计数以前是数 entries 数出来的、entries 只留
   // 最近 8 条 —— 9 和 10 两档因此等于「不限」，这道专门为自排链炸屏加的硬闸整个失效。
   // 日志按真实路径攒（appendSelfLogEntry 会削 entries），才验得出这件事。
-  it('上限设 10、已连发 10 条 → 照样拦下（计数不被 entries 的 8 条上限压平）', async () => {
+  it('上限设 10、已连发 10 次 → 照样拦下（计数不被 entries 的 8 条上限压平）', async () => {
     let log = createSelfLog(PACK_BUILT_AT);
     for (let i = 0; i < 10; i += 1) {
       log = appendSelfLogEntry(log, {
@@ -710,7 +710,7 @@ describe('连发上限（到点兜底闸）', () => {
     expect(lastSkipReason(writeState)).toBe('unanswered-limit');
   });
 
-  it('上限设 10、只连发 9 条 → 还差一条，照常生成', async () => {
+  it('上限设 10、只连发 9 次 → 还差一次，照常生成', async () => {
     let log = createSelfLog(PACK_BUILT_AT);
     for (let i = 0; i < 9; i += 1) {
       log = appendSelfLogEntry(log, {
@@ -895,8 +895,8 @@ describe('频率与额度（到点兜底闸）', () => {
     });
     ctx.scheduleTask = vi.fn();
     const prompt = fired(await amsgHooks.onBeforeFire(ctx)).messages[0].content;
-    expect(prompt).toContain('现在还能再排 2 条');
-    expect(prompt).toContain('现在排着 0 条');
+    expect(prompt).toContain('现在还能再排 2 次');
+    expect(prompt).toContain('现在挂着 0 个');
   });
 
   it('「不停」（0）时重复任务一直照发', async () => {
@@ -975,9 +975,9 @@ describe('频率与额度（到点兜底闸）', () => {
     ctx.scheduleTask = vi.fn();
     const prompt = fired(await amsgHooks.onBeforeFire(ctx)).messages[0].content;
     expect(prompt).toContain('用户给你定的规矩');
-    // 连发 3 条，正在发的这条占 1 条 → 还能再排 2 条；今天发过 1 次 + 这一条 → 还剩 3 次。
-    expect(prompt).toContain('现在还能再排 2 条');
-    expect(prompt).toContain('今天还能再主动发 3 条');
+    // 连发 3 次，正在发的这一次占 1 次 → 还能再排 2 次；今天发过 1 次 + 这一次 → 还剩 3 次。
+    expect(prompt).toContain('现在还能再排 2 次');
+    expect(prompt).toContain('今天还能再主动找对方 3 次');
   });
 });
 
@@ -2132,7 +2132,7 @@ describe('self_log — 角色自述回写', () => {
       llmOutput: '那只猫今天还来吗',
     });
     expect(next.prompt).not.toContain('- 刚刚　刚看到楼下那只猫又来了');
-    expect(next.prompt).toContain('你已连发 1 条');
+    expect(next.prompt).toContain('连着主动找了对方 1 次');
     // 锚点跟上新的那份包（tasks 段作废），连发记录两条都在。
     expect(store.selfLog()?.entries.map((e) => e.text))
       .toEqual(['刚看到楼下那只猫又来了', '那只猫今天还来吗']);

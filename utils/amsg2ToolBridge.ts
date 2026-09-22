@@ -270,7 +270,7 @@ async function handleSchedule(args: Record<string, any>, deps: Amsg2ToolDeps): P
       .filter((t) => t.source === 'character' && isPendingTask(t, Date.now()))
       .length;
     if (plannedSelfSends + 1 > unansweredLimit) {
-      return `对方还没回复，这期间你已经排了 ${plannedSelfSends} 条后续，用户设置的连发上限是 ${unansweredLimit} 条——这次别排了，等 ta 回复再说。`;
+      return `对方还没回复，这期间你已经排了 ${plannedSelfSends} 次后续，用户设的连发上限是 ${unansweredLimit} 次——这次别排了，等 ta 回复再说。`;
     }
   }
   // 回话里的时间按角色的钟写：到点 worker 渲染排程清单用的也是角色时区，两边对不上的话

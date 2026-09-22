@@ -2402,7 +2402,7 @@ export const ActiveMsgClient = {
     const pendingOthers = getPendingTasks(config, Date.now())
       .filter((t) => t.taskUuid !== replaceTaskUuid);
     if (pendingOthers.length >= maxActiveTasks) {
-      throw new Error(`该角色同时排着的消息已经有 ${maxActiveTasks} 条了（上限在「主动频率」里调），请先取消或合并已有的。`);
+      throw new Error(`该角色已经排好了 ${maxActiveTasks} 次主动消息，到上限了（上限在「主动频率」里调），请先取消或合并已有的。`);
     }
 
     // 角色的时间参照系：任务行、fire_pack、worker 渲染全用这一个，解析 send_at 也一样。

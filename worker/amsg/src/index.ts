@@ -1312,14 +1312,14 @@ export const runFireScheduleTool = async (
     return {
       ok: false,
       reason: 'unanswered_limit',
-      message: `对方还没回复，这期间你已经发了/排了 ${committedSends} 条，用户设置的连发上限是 ${unansweredLimit} 条——这次别排了，等 ta 回复再说。`,
+      message: `对方还没回复，这期间你已经主动找了 / 排了 ${committedSends} 次，用户设的连发上限是 ${unansweredLimit} 次——这次别排了，等 ta 回复再说。`,
     };
   }
   if (stash.scheduledTasks.length >= MAX_FIRE_SCHEDULES) {
     return {
       ok: false,
       reason: 'fire_limit',
-      message: `这次已经排了 ${MAX_FIRE_SCHEDULES} 条，够了，剩下的话直接写进这条消息里。`,
+      message: `这次已经排了 ${MAX_FIRE_SCHEDULES} 次后续，够了，剩下的话直接写进这条消息里。`,
     };
   }
   // 本轮取消掉的既有任务把名额还回来（提示词教的「取消再重排」才走得通）。
