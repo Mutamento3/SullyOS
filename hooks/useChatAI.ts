@@ -48,7 +48,8 @@ import { announceInstantChatRoute, getInstantChatPending, resolveInstantChatRead
 // 云端 fire 的总时长上限，安全网超时从它推导，worker 调预算时前端自动跟上。
 import { INSTANT_TOTAL_TIMEOUT_MS } from '../worker/amsg/src/instantChat';
 import { appendInstantTraceEntry } from '../utils/instantTraceLog';
-import { AMSG2_TOOL_NAMES, buildAmsg2Tools, createAmsg2ToolSession, executeAmsg2Tool, isAmsg2GlobalReady } from '../utils/amsg2ToolBridge';
+import { AMSG2_TOOL_NAMES, buildAmsg2Tools, createAmsg2ToolSession, executeAmsg2ToolWithOutcome, isAmsg2GlobalReady, type Amsg2ToolOutcome } from '../utils/amsg2ToolBridge';
+import { AMSG2_EMPTY_REPLY_PROMPT, AMSG2_WRAP_UP_PROMPT, createAmsg2StallTracker, extractToolRoundLeadIn, mergeToolRoundLeadIns } from '../utils/amsg2ToolLoop';
 import { buildLimitsBrief, resolveAmsgLimits } from '../utils/amsgLimits';
 import { shouldSendThinkingParams } from '../utils/thinkingGate';
 import { buildClaudeProxyCompatibilityBody, shouldRetryClaudeProxyCompatibility } from '../utils/claudeProxyCompat';
@@ -648,17 +649,32 @@ export const useChatAI = ({
         // 本轮里角色自己新排出来的任务。排程现状块每轮现算时靠它把这些点名标出来——不标
         // 的话角色分不清清单上哪条是自己刚排的，回头又排一条一模一样的。
         const amsg2CreatedThisTurn = new Set<string>();
+        // 通用工具循环里，模型在调主动消息工具的同一轮顺手写下的回话。收尾时跟最后一轮的
+        // 正文拼成一条（见 utils/amsg2ToolLoop），不然「话写在工具轮、最后一轮空着」就是空回。
+        const amsg2LeadIns: string[] = [];
         // 这一轮走的是即时对话、并且云端已经受理：收尾时不要再打脏重传一次 fire_pack。
         // POST 上去的那份就是权威的（还多带了 chat 段），再传一遍是同样内容白走一趟网络。
         let instantChatAccepted = false;
         // amsg2 工具在三个工具循环（麦当劳 / 瑞幸 / 通用）里都可能出现，执行方式完全一样，
         // 只有各自的 loopMessages 不同。
-        const runAmsg2ToolCall = async (tc: any, fname: string, args: any, loopMessages: any[]) => {
+        const runAmsg2ToolCall = async (
+            tc: any, fname: string, args: any, loopMessages: any[], round: number,
+        ): Promise<Amsg2ToolOutcome> => {
             setSearchStatus(`正在执行：${fname}...`);
             const taskUuidsBefore = new Set(
                 (amsg2Session.getConfig()?.tasks ?? []).map((t) => t.taskUuid),
             );
-            const result = await executeAmsg2Tool(fname, args, amsg2Session);
+            const { text: result, outcome } = await executeAmsg2ToolWithOutcome(fname, args, amsg2Session);
+            // 本地这条路的每次排程都留一条 trace（调试面板 → amsg2 观察窗能看、能导出）：
+            // 打回全在浏览器里判，请求到不了 worker，不记这一笔的话事后什么都查不到。
+            // 只记工具名和结局枚举，不带参数和聊天内容。
+            appendInstantTraceEntry({
+                ts: new Date().toISOString(),
+                event: 'amsg2-local-tool',
+                charId: char.id,
+                round,
+                ...outcome,
+            });
             // 新增了哪几条不看工具回话（那是给模型读的散文），直接比对清单前后差异——
             // schedule 与 renew 都走这里，补发/替换出来的新任务一并算进去。
             for (const task of amsg2Session.getConfig()?.tasks ?? []) {
@@ -667,6 +683,7 @@ export const useChatAI = ({
             // 带上 name：Gemini 兼容层要求工具结果的 name 非空，缺了会被判 INVALID_ARGUMENT。
             loopMessages.push(buildToolResultMessage(tc, result) as any);
             setSearchStatus('');
+            return outcome;
         };
 
         try {
@@ -1414,7 +1431,7 @@ export const useChatAI = ({
                         // 又不带 tools, 角色「点单时顺手排个提醒」就永远不会生效。
                         const route = routeMiniAppToolCall(fname, args);
                         if (route === 'amsg2') {
-                            await runAmsg2ToolCall(tc, fname, args, loopMessages);
+                            await runAmsg2ToolCall(tc, fname, args, loopMessages, it);
                             continue;
                         }
                         if (route === 'propose') {
@@ -1524,7 +1541,7 @@ export const useChatAI = ({
                         // 又不带 tools, 角色「点单时顺手排个提醒」就永远不会生效。
                         const route = routeMiniAppToolCall(fname, args);
                         if (route === 'amsg2') {
-                            await runAmsg2ToolCall(tc, fname, args, loopMessages);
+                            await runAmsg2ToolCall(tc, fname, args, loopMessages, it);
                             continue;
                         }
                         if (route === 'propose') {
@@ -1614,6 +1631,9 @@ export const useChatAI = ({
                 const seenMcpOutcomes = new Set<string>();
                 let stalledMcpRounds = 0;
                 let lastMcpCallSignature: string | null = null;
+                const amsg2Stall = createAmsg2StallTracker();
+                let amsg2ToolRounds = 0;
+                let wrapUpKind: 'none' | 'hard-limit' | 'stalled' | 'amsg2-stalled' = 'none';
                 for (let it = 0; it < MAX_LOOPS; it++) {
                     const toolCalls = normalizeToolCallsForCompat(
                         data.choices?.[0]?.message?.tool_calls,
@@ -1631,6 +1651,7 @@ export const useChatAI = ({
                     } as any);
                     let mcpCallsThisRound = 0;
                     let mcpProgressThisRound = false;
+                    const amsg2Outcomes: Amsg2ToolOutcome[] = [];
                     for (const tc of toolCalls) {
                         const fname: string = tc.function?.name || '';
                         let args: any = {};
@@ -1675,7 +1696,7 @@ export const useChatAI = ({
                         }
                         // 主动消息 2.0 工具
                         if (AMSG2_TOOL_NAMES.has(fname)) {
-                            await runAmsg2ToolCall(tc, fname, args, loopMessages);
+                            amsg2Outcomes.push(await runAmsg2ToolCall(tc, fname, args, loopMessages, it));
                             continue;
                         }
                         // 只开了 MCP 没开瑞幸时, 幻觉出的未知工具名直接回错误让模型自我纠正
@@ -1728,9 +1749,23 @@ export const useChatAI = ({
                     if (mcpCallsThisRound > 0) {
                         stalledMcpRounds = mcpProgressThisRound ? 0 : stalledMcpRounds + 1;
                     }
-                    const reachedHardLimit = !!mcpToolResolve && it + 1 >= MAX_LOOPS;
+                    if (amsg2Outcomes.length > 0) {
+                        amsg2ToolRounds += 1;
+                        // 这一轮写下的回话留着（MCP 轮的开场白已经由 persistMcpLeadIn 单独落库了）。
+                        if (mcpCallsThisRound === 0) {
+                            const leadIn = extractToolRoundLeadIn(data.choices?.[0]?.message?.content);
+                            if (leadIn) amsg2LeadIns.push(leadIn);
+                        }
+                    }
+                    const amsg2Stalled = amsg2Stall.record(amsg2Outcomes);
+                    // 转到上限还在要工具的话，最后那份响应里只有 tool_calls、没有正文——所以只要
+                    // 挂着主动消息工具，到上限也得收尾，不能只管 MCP。
+                    const reachedHardLimit = (!!mcpToolResolve || amsg2ToolRounds > 0) && it + 1 >= MAX_LOOPS;
                     const stalled = !!mcpToolResolve && stalledMcpRounds >= MCP_CHAT_MAX_STALLED_ROUNDS;
-                    const forceWrapUp = reachedHardLimit || stalled;
+                    const forceWrapUp = reachedHardLimit || stalled || amsg2Stalled;
+                    if (forceWrapUp) {
+                        wrapUpKind = stalled ? 'stalled' : amsg2Stalled ? 'amsg2-stalled' : 'hard-limit';
+                    }
                     // 继续让角色多步推进 (保留 tools, 允许 query→search→preview 连续走)
                     if (mcpToolResolve) setSearchStatus('正在整理 MCP 工具结果...');
                     // 排程现状现算一次贴上：本轮刚排的任务这时才进得了清单，角色下一轮
@@ -1739,7 +1774,12 @@ export const useChatAI = ({
                     if (forceWrapUp) {
                         followMessages.push({
                             role: 'user',
-                            content: `[系统消息：工具阶段${stalled ? '连续两轮没有产生新结果' : '已到本轮安全上限'}。请停止调用工具，基于已经拿到的结果直接用角色语气回复；如目标仍未完成，请如实说明卡在哪一步。不要输出工具名、参数或这条系统消息。]`,
+                            // 收尾的原因是主动消息工具时换一句话：排程这件事用户看不见，照 MCP 那句
+                            // 「如实说明卡在哪一步」写的话，角色会跟用户交代「我的提醒排不上」。
+                            content: wrapUpKind === 'amsg2-stalled'
+                                || (wrapUpKind === 'hard-limit' && !mcpToolResolve && !payload.flags.luckinChatActive)
+                                ? AMSG2_WRAP_UP_PROMPT
+                                : `[系统消息：工具阶段${stalled ? '连续两轮没有产生新结果' : '已到本轮安全上限'}。请停止调用工具，基于已经拿到的结果直接用角色语气回复；如目标仍未完成，请如实说明卡在哪一步。不要输出工具名、参数或这条系统消息。]`,
                         });
                     }
                     const followBody = { ...baseReqBody, messages: followMessages };
@@ -1753,6 +1793,44 @@ export const useChatAI = ({
                     });
                     updateTokenUsage(data, historyMsgCount, `${payload.flags.luckinChatActive ? 'luckin-chat' : 'mcp-chat'}-${it + 1}`);
                     if (forceWrapUp) break;
+                }
+                // 主动消息工具跑过、模型最后却一个字没说（常见于排成功之后：它觉得话在工具轮
+                // 已经说完了），而工具轮里也没留下话——补一轮不带 tools 的请求让它开口。
+                // 已经逼过一次收尾的不再补，免得一轮聊天无止境地加请求。
+                let emptyRescued = false;
+                if (
+                    amsg2ToolRounds > 0
+                    && wrapUpKind === 'none'
+                    && amsg2LeadIns.length === 0
+                    && !extractToolRoundLeadIn(data.choices?.[0]?.message?.content)
+                    && !data.choices?.[0]?.message?.tool_calls?.length
+                ) {
+                    emptyRescued = true;
+                    const rescueBody = {
+                        ...baseReqBody,
+                        messages: [...withAmsg2TaskContext(loopMessages), { role: 'user', content: AMSG2_EMPTY_REPLY_PROMPT }],
+                    };
+                    delete (rescueBody as any).tools;
+                    delete (rescueBody as any).tool_choice;
+                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                        method: 'POST', headers,
+                        body: JSON.stringify(rescueBody),
+                    });
+                    updateTokenUsage(data, historyMsgCount, 'amsg2-empty-rescue');
+                }
+                if (amsg2ToolRounds > 0) {
+                    // 这一轮工具循环怎么收的尾：几轮工具、有没有被逼收尾、有没有补救空回、
+                    // 最后拼出来的回话多长。跟上面每次调用那几条对着看，就知道空回卡在哪一步。
+                    appendInstantTraceEntry({
+                        ts: new Date().toISOString(),
+                        event: 'amsg2-local-tool-loop',
+                        charId: char.id,
+                        toolRounds: amsg2ToolRounds,
+                        wrapUp: wrapUpKind,
+                        emptyRescued,
+                        leadIns: amsg2LeadIns.length,
+                        replyChars: mergeToolRoundLeadIns(amsg2LeadIns, data.choices?.[0]?.message?.content || '').length,
+                    });
                 }
                 if (mcpToolResolve) setSearchStatus('');
             }
@@ -1875,7 +1953,10 @@ export const useChatAI = ({
                 }
                 setMessages(msgs);
             };
-            const rawAiContent = data.choices?.[0]?.message?.content || '';
+            // 工具轮里说过的话拼在最前面（没有工具轮时 amsg2LeadIns 是空的，原样取最后一轮）。
+            const rawAiContent = amsg2LeadIns.length
+                ? mergeToolRoundLeadIns(amsg2LeadIns, data.choices?.[0]?.message?.content || '')
+                : data.choices?.[0]?.message?.content || '';
             const sarReply = parseSARModuleReply(rawAiContent, sarModulePlan);
             const latestUserMessage = currentMsgs.slice().reverse().find(message => (
                 message.role === 'user' && message.type === 'text'
