@@ -1481,8 +1481,11 @@ describe('云端思考链随首条 push 回客户端', () => {
    * 跑一次即时对话的 fire，可以连喂好几轮（工具循环）；返回最后一轮的 decision。
    * 走即时对话是因为思考链只在这条路回传——定时任务那条见下面单独一条用例。
    */
+  /** 最近一次 instantFire 用的 store：要看旁路存储写了什么的用例从这里读。 */
+  let lastInstantStore: ReturnType<typeof makeFireStore> | null = null;
   const instantFire = async (rounds: Round[], extraMeta: Record<string, unknown> = {}) => {
     const store = makeFireStore(CHAT_MESSAGES);
+    lastInstantStore = store;
     const scratch: Record<string, unknown> = {};
     const metadata = {
       charId: CHAR_ID,
@@ -1641,6 +1644,119 @@ describe('云端思考链随首条 push 回客户端', () => {
     expect(meta.amsgReasoning).toContain('他终于开口了');
     expect(meta.amsgEmotionUpdate).toContain('EVAL-RAW-MARKER');
     expect(meta.amsgEmotionDone).toBe(true);
+  });
+
+  // SAR 临时模块生效时模型回的是一个信封。worker 要在分段之前拆开：只有真意进分段，
+  // 外显逐段挂回、横幅跟着换，快照和用户外显只随最后一条回去（线协议见
+  // plans/amsg2-instant-chat-contract.md 的「push metadata 扩展字段」）。
+  describe('SAR 信封', () => {
+    const SAR_SNAPSHOT = {
+      v: 1,
+      character: { runId: 'run-c', moduleId: 'mod-c', moduleTitle: '反话模块', target: 'character', phase: 'active' },
+      user: { runId: 'run-u', moduleId: 'mod-u', moduleTitle: '夹子音', target: 'user', phase: 'active' },
+      events: [{
+        version: 1, runId: 'run-c', moduleId: 'mod-c', moduleTitle: '反话模块', target: 'character',
+        source: 'user', phase: 'active', moment: 'active',
+      }],
+      userMessageId: 11,
+      userSurfaceTargetIds: [11],
+      reroll: false,
+    };
+    const sarOutput = (userSurface: string) => [
+      '<SAR_MODULE_OUTPUT>',
+      '<CHAR_TRUE>\n想你了。\n早点睡\n</CHAR_TRUE>',
+      '<CHAR_SURFACE>\n一点都不想你。\n熬通宵吧\n</CHAR_SURFACE>',
+      `<USER_SURFACE>\n${userSurface}\n</USER_SURFACE>`,
+      '</SAR_MODULE_OUTPUT>',
+    ].join('\n');
+
+    it('任务带 amsgSar → 只有真意成 push，外显逐段挂上、横幅用外显，快照与用户外显只在末条', async () => {
+      const decision = await instantFire(
+        [{ output: sarOutput('人家好想你嘛～') }],
+        { amsgSar: SAR_SNAPSHOT },
+      );
+
+      expect(decision.decision).toBe('finish');
+      const payloads = decision.pushPayloads as Array<Record<string, any>>;
+      expect(payloads.map((p) => p.message)).toEqual(['想你了。', '早点睡']);
+      expect(JSON.stringify(payloads.map((p) => [p.message, p.notification])))
+        .not.toMatch(/SAR_MODULE_OUTPUT|CHAR_TRUE|CHAR_SURFACE|USER_SURFACE/);
+      expect(payloads.map((p) => p.metadata.amsgSarSurface?.surface)).toEqual(['一点都不想你。', '熬通宵吧']);
+      expect(payloads[0].metadata.amsgSarSurface.runId).toBe('run-c');
+      // 通知策略照常叠上去，但横幅正文还是外显，不被覆盖回真意。
+      expect(payloads.map((p) => p.notification.body)).toEqual(['一点都不想你。', '熬通宵吧']);
+      expect(payloads[0].notification.tag).toBe(`amsg-instant-${CHAR_ID}`);
+
+      expect(payloads[0].metadata.amsgSar).toBeUndefined();
+      expect(payloads[0].metadata.amsgSarUserSurface).toBeUndefined();
+      expect(payloads[1].metadata.amsgSar).toEqual(SAR_SNAPSHOT);
+      expect(payloads[1].metadata.amsgSarUserSurface).toBe('人家好想你嘛～');
+    });
+
+    it('用户外显撑爆一条 push → 旁路存到 sar_user_surface:<clientTaskId>，末条只留 amsgSarUserSurfaceRef', async () => {
+      const longSurface = '人家真的好想好想你'.repeat(200);
+      const decision = await instantFire(
+        [{ output: sarOutput(longSurface) }],
+        { amsgSar: SAR_SNAPSHOT },
+      );
+
+      expect(decision.decision).toBe('finish');
+      const payloads = decision.pushPayloads as Array<Record<string, any>>;
+      const last = payloads[payloads.length - 1].metadata;
+      const key = `sar_user_surface:${CLIENT_TASK_ID}`;
+      expect(last.amsgSarUserSurfaceRef).toBe(key);
+      expect(last.amsgSarUserSurface).toBeUndefined();
+      expect(lastInstantStore?.rows.get(key)).toBe(longSurface);
+      // 挪的顺序里快照排在用户外显前面：用户外显都得挪了，快照已经先挪走了。
+      expect(last.amsgSarRef).toBe(`sar_snapshot:${CLIENT_TASK_ID}`);
+      expect(last.amsgSar).toBeUndefined();
+      expect(JSON.parse(lastInstantStore!.rows.get(`sar_snapshot:${CLIENT_TASK_ID}`)!)).toEqual(SAR_SNAPSHOT);
+      for (const payload of payloads) {
+        expect(new TextEncoder().encode(JSON.stringify(payload)).length)
+          .toBeLessThanOrEqual(MAX_PUSH_PAYLOAD_BYTES);
+      }
+    });
+
+    // SAR 回合一条 push 要同时装真意、外显横幅、外显 meta、快照，长台词很容易超 4KB。
+    // 每条 push 的外显 meta 各自可挪，键里带段序号——同一轮几条不能互相覆盖。
+    it('外显 meta 撑爆 push → 按段号分别旁路到 sar_surface:<clientTaskId>:<i>，各条只留 amsgSarSurfaceRef', async () => {
+      const truthA = '真'.repeat(700);
+      const truthB = '意'.repeat(700);
+      const surfaceA = '外'.repeat(700);
+      const surfaceB = '显'.repeat(700);
+      const output = [
+        '<SAR_MODULE_OUTPUT>',
+        `<CHAR_TRUE>\n${truthA}\n${truthB}\n</CHAR_TRUE>`,
+        `<CHAR_SURFACE>\n${surfaceA}\n${surfaceB}\n</CHAR_SURFACE>`,
+        '</SAR_MODULE_OUTPUT>',
+      ].join('\n');
+      const decision = await instantFire([{ output }], { amsgSar: SAR_SNAPSHOT });
+
+      expect(decision.decision).toBe('finish');
+      const payloads = decision.pushPayloads as Array<Record<string, any>>;
+      expect(payloads.map((p) => p.message)).toEqual([truthA, truthB]);
+      const keys = [0, 1].map((i) => `sar_surface:${CLIENT_TASK_ID}:${i}`);
+      payloads.forEach((payload, i) => {
+        expect(payload.metadata.amsgSarSurface).toBeUndefined();
+        expect(payload.metadata.amsgSarSurfaceRef).toBe(keys[i]);
+        expect(new TextEncoder().encode(JSON.stringify(payload)).length)
+          .toBeLessThanOrEqual(MAX_PUSH_PAYLOAD_BYTES);
+      });
+      expect(JSON.parse(lastInstantStore!.rows.get(keys[0])!).surface).toBe(surfaceA);
+      expect(JSON.parse(lastInstantStore!.rows.get(keys[1])!).surface).toBe(surfaceB);
+      // 横幅截短了，但仍是外显。
+      expect(payloads[0].notification.body.startsWith('外外外')).toBe(true);
+    });
+
+    it('amsgSar 形状不对 → 当没有：不拆信封也不回传', async () => {
+      const decision = await instantFire(
+        [{ output: '直接说话。\n不带信封' }],
+        { amsgSar: { ...SAR_SNAPSHOT, v: 2 } },
+      );
+      const payloads = decision.pushPayloads as Array<Record<string, any>>;
+      expect(payloads.map((p) => p.message)).toEqual(['直接说话。', '不带信封']);
+      for (const payload of payloads) expect(payload.metadata.amsgSar).toBeUndefined();
+    });
   });
 });
 

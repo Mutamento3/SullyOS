@@ -58,8 +58,10 @@ import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply
 import { announceChatGen, CHAT_GEN_EVENTS } from '../utils/chatGenEvents';
 import {
     advanceSARModuleAfterReply,
+    buildAmsgSarModuleSnapshot,
     createSARModuleEventMeta,
     createSARModuleSurfaceMeta,
+    findSARTurnUserMessage,
     getSARModuleRuntimePlan,
     parseSARModuleReply,
 } from '../utils/vrWorld/sarModuleRuntime';
@@ -752,19 +754,35 @@ export const useChatAI = ({
             // 判据就一句话：这一轮上云会让角色掉能力，那就别上云。留在本地跑，工具照常用。
             // （地址够得着的服务器不受影响，照常上云，worker 自己跑后台 MCP。）
             const mcpWorkerUnreachable = hasWorkerUnreachableMcpServer(char.id);
-            const instantChatVeto: string | null = sarModulePlan.hasActiveEffect || sarModulePlan.hasAfterglow ? 'sar-module'
-                : luckinChatOn ? 'luckin-chat'
-                : mcdMiniOpen ? 'mcd'
-                    : luckinMiniOpen ? 'luckin'
-                        : mcpWorkerUnreachable ? 'mcp-worker-unreachable' : null;
             // 带上 char：角色单独关了即时对话（reason char-disabled）时 ready 直接为
             // false，和「全局没开」同一待遇——下面那条 veto trace 的条件够不到它，
             // 静默走本地。那是用户的主动选择，每条消息刷一遍 warn 就成骚扰了。
-            const instantChatReadiness = await resolveInstantChatReadiness(char);
+            //
+            // SAR 模块生效期的回复是 <SAR_MODULE_OUTPUT> 信封，要由 worker 在分段之前拆开。
+            // 旧 bundle 不认信封，会把它当普通正文切成一串气泡、控制标签直接上屏，比留在本地跑
+            // 糟得多。所以这类回合要求确认那台 Worker 是当前 bundle：存量为空（老用户刚更新 App、
+            // 握手探测还没回来）就当场探一次（带 3 秒超时），探到旧版 → outdated，探不到 →
+            // unverified，两种都留在本地跑。只剩恢复期提示（afterglow）的回合不需要信封，
+            // 任何 Worker 都跑得了，不探也不拦。
+            const instantChatReadiness = await resolveInstantChatReadiness(char, {
+                ensureBundleVersion: sarModulePlan.requiresEnvelope,
+            });
             const instantChatOn = instantChatReadiness.ready;
+            // 只在 ready 时判：没 ready 的那几档（含 config-unreadable）各有自己的收场，
+            // 这里再挂一个否决会把「配置读不出来就明确报错」那档错判成「本来就不走即时对话」。
+            const sarWorkerVeto: string | null = !instantChatOn || !sarModulePlan.requiresEnvelope ? null
+                : instantChatReadiness.workerBundleCurrent === false ? 'sar-module-worker-outdated'
+                    : instantChatReadiness.workerBundleCurrent === undefined ? 'sar-module-worker-unverified'
+                        : null;
+            const instantChatVeto: string | null = sarWorkerVeto
+                ?? (luckinChatOn ? 'luckin-chat'
+                : mcdMiniOpen ? 'mcd'
+                    : luckinMiniOpen ? 'luckin'
+                        : mcpWorkerUnreachable ? 'mcp-worker-unreachable' : null);
             const instantChatRoute = instantChatOn && !instantChatVeto;
             // 「即时对话开着、这一轮却没上云」的所有情形都在这一处留痕，都是留在本地跑：
-            //   · SAR 模块效果：效果与解除提示需要本地解析；
+            //   · SAR 模块生效期、但没能确认那台 Worker 是当前 bundle（探到旧版 / 没探到）：
+            //     旧 bundle 拆不了回复信封（恢复期回合照常上云，见上面那段）；
             //   · 点单流程否决：瑞幸/麦当劳是客户端交互式循环（选城市、确认单），云端接不了
             //     手，这一轮留在本地跑是对的；
             //   · MCP 地址 worker 够不着：同上，留在本地才有工具（见上面那段）。
@@ -774,8 +792,10 @@ export const useChatAI = ({
             if (instantChatOn && !instantChatRoute) {
                 const skipReason = instantChatVeto;
                 console.warn(
-                    skipReason === 'sar-module'
-                        ? '[AmsgInstantChat] SAR 模块效果与解除提示需要本地解析，这一轮在本地生成'
+                    skipReason === 'sar-module-worker-outdated'
+                        ? '[AmsgInstantChat] 这一轮没上云（SAR 模块生效中，那台 Worker 还是旧 bundle、拆不了模块的回复信封），本地生成。去设置页点「更新 Worker」'
+                        : skipReason === 'sar-module-worker-unverified'
+                        ? '[AmsgInstantChat] 这一轮没上云（SAR 模块生效中，没问到那台 Worker 的版本、确认不了它认得模块的回复信封），本地生成。连上云端探到版本后会自己回到云端'
                         : skipReason === 'mcp-worker-unreachable'
                         ? '[AmsgInstantChat] 这一轮没上云（有 MCP 服务器填的是本机/内网地址，worker 够不着），本地生成，工具照常可用'
                         : `[AmsgInstantChat] 这一轮没上云（${skipReason} 点单流程需要客户端交互），本地生成`,
@@ -836,9 +856,11 @@ export const useChatAI = ({
             // 这一轮到底走了哪条路，播给输入框上方那条小提示。**每轮都发**，包括走成了云端
             // 那一轮（reason=null，提示自己收起来）——只在出问题时发的话，用户会一直盯着一条
             // 早就过期的提示，猜不出来「现在到底恢复了没有」。
+            // 否决原因也一并播出去：提示条自己按名单挑「用户想上云、实际没上」的那几档显示
+            // （SAR 遇上旧 Worker / 版本没探到），点单流程这类本该留在本地的不在名单里、照旧不出声。
             announceInstantChatRoute({
                 charId: char.id,
-                reason: instantChatRoute ? null : (instantChatReadiness.reason ?? null),
+                reason: instantChatRoute ? null : (instantChatReadiness.reason ?? instantChatVeto),
             });
 
             const payload = await stageT('payload', buildChatRequestPayload({
@@ -1186,7 +1208,7 @@ export const useChatAI = ({
             // 走不走这条路，构建 payload 之前的 instantChatRoute 已经算完了，这里只认它
             // 一个值：「这份 prompt 剥没剥时效段」和「这一轮走不走云端」必须是同一个判断，
             // 各算各的话两边总有一天会不同意，剥过的那份 prompt 就落到别的路上去了。
-            // 没上云的那些情形（SAR 模块 / 点单否决 / MCP 地址够不着）在那一段里已经报过 trace，
+            // 没上云的那些情形（SAR 模块遇上旧版或没确认版本的 Worker / 点单否决 / MCP 地址够不着）在那一段里已经报过 trace，
             // 这边不重复报，也不重复拦。
             //
             // MCP 刻意不在排除名单里：worker fire 时自己解析 tool_config、自己跑后台
@@ -1201,6 +1223,13 @@ export const useChatAI = ({
                 const amsg2NoticesBlock = amsg2ToolsInjected && amsg2Notices.length
                     ? buildAmsg2NoticesText(amsg2Notices, resolveCharTimeZone(char), userProfile.name)
                     : null;
+                const amsgSarSnapshot = buildAmsgSarModuleSnapshot({
+                    plan: sarModulePlan,
+                    charId: char.id,
+                    currentMsgs,
+                    historyMsgs: contextMsgs,
+                    reroll: skipEmotionInjection,
+                });
                 const instantChatResult = await sendInstantChatTurn({
                     char,
                     // 云端要发给模型的就是本地这一份，一个字不改（见 fire_pack 的 chat 段）。
@@ -1233,6 +1262,10 @@ export const useChatAI = ({
                     // （见 worker/amsg/src/emotionEval.ts）。放在这里而不是本地 fire 一枪，
                     // 是因为用户发完就能关页面——留在本地的话，页面一关情绪底色就停更了。
                     ...(cloudEmotionEval ? { emotionEval: cloudEmotionEval } : {}),
+                    // SAR 模块的请求时快照：worker 按它拆信封、逐段带回外显，落库侧按它写事件、
+                    // 推进回合（本地路径在回复成功后做的那几件事）。目标消息取自喂给 prompt 的
+                    // 同一份 contextMsgs，和模型看到的 USER_SURFACE 列表是同一批 id。
+                    ...(amsgSarSnapshot ? { sarModule: amsgSarSnapshot } : {}),
                 });
                 if (instantChatResult.ok) {
                     // 这次 POST 已经把权威的那份 fire_pack 传上去了，收尾不必再打脏重传一遍。
@@ -1958,9 +1991,7 @@ export const useChatAI = ({
                 ? mergeToolRoundLeadIns(amsg2LeadIns, data.choices?.[0]?.message?.content || '')
                 : data.choices?.[0]?.message?.content || '';
             const sarReply = parseSARModuleReply(rawAiContent, sarModulePlan);
-            const latestUserMessage = currentMsgs.slice().reverse().find(message => (
-                message.role === 'user' && message.type === 'text'
-            ));
+            const latestUserMessage = findSARTurnUserMessage(currentMsgs);
             const sarModuleEvents = createSARModuleEventMeta(sarModulePlan);
             const userSurfaces = parseSARUserSurfaces(sarReply.userSurface,
                 selectSARUserSurfaceTargets(contextMsgs, char.id, sarModulePlan.user));

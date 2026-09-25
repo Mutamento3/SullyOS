@@ -3,7 +3,7 @@
 // worker/amsg/src/index.ts
 import { DurableObject } from "cloudflare:workers";
 
-// node_modules/.pnpm/@rei-standard+amsg-server@2.6.0-next.30_@neondatabase+serverless@1.1.0_pg@8.22.0/node_modules/@rei-standard/amsg-server/dist/chunk-GN44PST5.mjs
+// ../SullyOS/node_modules/.pnpm/@rei-standard+amsg-server@2.6.0-next.30_@neondatabase+serverless@1.1.0_pg@8.22.0/node_modules/@rei-standard/amsg-server/dist/chunk-GN44PST5.mjs
 var UPDATABLE_COLUMNS = /* @__PURE__ */ new Set([
   "user_id",
   "uuid",
@@ -22,7 +22,7 @@ var UPDATABLE_COLUMNS = /* @__PURE__ */ new Set([
 var TASK_DELIVERY_COLUMNS = "id, user_id, uuid, encrypted_payload, message_type, next_send_at, retry_after, status, retry_count";
 var TASK_DETAIL_COLUMNS = "id, user_id, uuid, encrypted_payload, message_type, next_send_at, status, retry_count, last_error, created_at, updated_at";
 
-// node_modules/.pnpm/@rei-standard+amsg-shared@0.4.0-next.10/node_modules/@rei-standard/amsg-shared/dist/index.mjs
+// ../SullyOS/node_modules/.pnpm/@rei-standard+amsg-shared@0.4.0-next.10/node_modules/@rei-standard/amsg-shared/dist/index.mjs
 var TEXT_ENCODER = new TextEncoder();
 var TEXT_DECODER = new TextDecoder("utf-8", { fatal: false });
 function toUint8(buf) {
@@ -1107,12 +1107,12 @@ function assertValidDecision(decision, options = {}) {
   if (!decision || typeof decision !== "object") {
     throw new TypeError(`onLLMOutput returned invalid decision: ${stringifyDecisionForError(decision)}`);
   }
-  const tag = (
+  const tag2 = (
     /** @type {{ decision?: unknown }} */
     decision.decision
   );
-  if (typeof tag !== "string" || !VALID_DECISIONS.has(tag)) {
-    throw new TypeError(`onLLMOutput returned invalid decision tag: ${stringifyDecisionForError(tag)}`);
+  if (typeof tag2 !== "string" || !VALID_DECISIONS.has(tag2)) {
+    throw new TypeError(`onLLMOutput returned invalid decision tag: ${stringifyDecisionForError(tag2)}`);
   }
   const hasSingular = Object.prototype.hasOwnProperty.call(decision, "pushPayload");
   const hasPlural = Object.prototype.hasOwnProperty.call(decision, "pushPayloads");
@@ -1121,7 +1121,7 @@ function assertValidDecision(decision, options = {}) {
       hasPlural ? "pushPayload (singular) is removed in 0.8.0, use pushPayloads" : "pushPayload (singular) is removed in 0.8.0, use pushPayloads: [yourPayload]"
     );
   }
-  if (tag === "continue") {
+  if (tag2 === "continue") {
     if (!Array.isArray(
       /** @type {{ nextHistory?: unknown }} */
       decision.nextHistory
@@ -1130,10 +1130,10 @@ function assertValidDecision(decision, options = {}) {
     }
     return;
   }
-  if (tag === "skip-push") {
+  if (tag2 === "skip-push") {
     return;
   }
-  if (tag === "tool-request" && inlineToolCalls && Object.prototype.hasOwnProperty.call(decision, "toolCalls")) {
+  if (tag2 === "tool-request" && inlineToolCalls && Object.prototype.hasOwnProperty.call(decision, "toolCalls")) {
     const toolCalls = (
       /** @type {{ toolCalls?: unknown }} */
       decision.toolCalls
@@ -1153,7 +1153,7 @@ function assertValidDecision(decision, options = {}) {
     /** @type {{ pushPayloads?: unknown }} */
     decision.pushPayloads
   )) {
-    throw new TypeError(`decision:"${tag}" requires a pushPayloads array`);
+    throw new TypeError(`decision:"${tag2}" requires a pushPayloads array`);
   }
   const pushes = (
     /** @type {Array<unknown>} */
@@ -1215,7 +1215,7 @@ function stringifyDecisionForError(value) {
   }
 }
 
-// node_modules/.pnpm/@rei-standard+amsg-server@2.6.0-next.30_@neondatabase+serverless@1.1.0_pg@8.22.0/node_modules/@rei-standard/amsg-server/dist/chunk-VBDBORLR.mjs
+// ../SullyOS/node_modules/.pnpm/@rei-standard+amsg-server@2.6.0-next.30_@neondatabase+serverless@1.1.0_pg@8.22.0/node_modules/@rei-standard/amsg-server/dist/chunk-VBDBORLR.mjs
 var DAY_MS = 24 * 60 * 60 * 1e3;
 var MAX_LISTED_SKIPPED_OCCURRENCES = 32;
 var MAX_ADJUST_STEPS = 32;
@@ -7629,7 +7629,7 @@ function createSingleUserCloudflareWorker(buildConfig, options = {}) {
 }
 
 // utils/amsgBundleVersion.ts
-var AMSG_BUNDLE_VERSION = "2026-09-22";
+var AMSG_BUNDLE_VERSION = "2026-09-25.2";
 
 // utils/amsgTaskKinds.ts
 var AMSG_TASK_KIND_KEY = "amsgKind";
@@ -12541,7 +12541,7 @@ var buildDuplicateToolMessage = (name) => [
   "\u6216\u8005\u6362\u4E00\u4E2A\u8FD8\u6CA1\u7528\u8FC7\u7684\u5DE5\u5177\u3002\u524D\u9762\u5DF2\u7ECF\u8BF4\u51FA\u53BB\u7684\u5185\u5BB9\u548C\u6807\u7B7E\u4E0D\u8981\u91CD\u5199\uFF0C\u63A5\u7740\u5F80\u4E0B\u5199\u5C31\u884C\u3002]"
 ].join("\n");
 
-// node_modules/.pnpm/@rei-standard+amsg-instant@0.11.0-next.6/node_modules/@rei-standard/amsg-instant/dist/index.mjs
+// ../SullyOS/node_modules/.pnpm/@rei-standard+amsg-instant@0.11.0-next.6/node_modules/@rei-standard/amsg-instant/dist/index.mjs
 var PUSH_PAYLOAD_BYTE_ENCODER = new TextEncoder();
 function segmentTextWithProtectedBlocks(text, options) {
   if (!text) return [];
@@ -12700,24 +12700,24 @@ function normalizeVoiceTags(t) {
   result = result.replace(/＜\s*[/／]\s*([语語]音|字幕)\s*＞/g, "</$1>");
   result = result.replace(/＜\s*((?:[语語]音|字幕)[^<>＜＞]*?)\s*＞/g, "<$1>");
   result = result.replace(/<\s*[/／]\s*([语語]音|字幕)\s*>/g, "</$1>");
-  result = result.replace(/<([语語]音|字幕)\s*([^<>]*?)\s*>/g, (_m, tag, attrs) => {
-    if (!attrs) return `<${tag}>`;
+  result = result.replace(/<([语語]音|字幕)\s*([^<>]*?)\s*>/g, (_m, tag2, attrs) => {
+    if (!attrs) return `<${tag2}>`;
     const fixed = attrs.replace(/[“”＂]/g, '"').replace(/[‘’]/g, "'").replace(/＝/g, "=").trim();
-    return `<${tag} ${fixed}>`;
+    return `<${tag2} ${fixed}>`;
   });
   result = repairPairedTag(result, /<\/?[语語]音[^>]*>/g, (tok) => /語/.test(tok) ? "\u8A9E\u97F3" : "\u8BED\u97F3", true);
   result = repairPairedTag(result, /<\/?字幕[^>]*>/g, () => "\u5B57\u5E55", false);
   return result;
 }
-var simpTransTag = (tag) => tag.replace(/譯/g, "\u8BD1");
+var simpTransTag = (tag2) => tag2.replace(/譯/g, "\u8BD1");
 function normalizeTranslationTags(t) {
   if (!/[<＜]\s*[/／]?\s*(?:翻[译譯]|原文|[译譯]文)/.test(t)) return t;
   let result = t;
-  result = result.replace(/[<＜]\s*[/／]\s*(翻[译譯]|原文|[译譯]文)\s*[>＞]/g, (_m, tag) => `</${simpTransTag(tag)}>`);
-  result = result.replace(/[<＜]\s*(翻[译譯]|原文|[译譯]文)\s*[>＞]/g, (_m, tag) => `<${simpTransTag(tag)}>`);
+  result = result.replace(/[<＜]\s*[/／]\s*(翻[译譯]|原文|[译譯]文)\s*[>＞]/g, (_m, tag2) => `</${simpTransTag(tag2)}>`);
+  result = result.replace(/[<＜]\s*(翻[译譯]|原文|[译譯]文)\s*[>＞]/g, (_m, tag2) => `<${simpTransTag(tag2)}>`);
   result = result.replace(
     /[<＜]\s*([/／]?)\s*(翻[译譯]|原文|[译譯]文)\s*(?=$|\n|[<＜])/g,
-    (_m, slash, tag) => `<${slash ? "/" : ""}${simpTransTag(tag)}>`
+    (_m, slash, tag2) => `<${slash ? "/" : ""}${simpTransTag(tag2)}>`
   );
   result = repairPairedTag(result, /<\/?原文[^>]*>/g, () => "\u539F\u6587", false);
   result = repairPairedTag(result, /<\/?译文[^>]*>/g, () => "\u8BD1\u6587", false);
@@ -13316,6 +13316,205 @@ function classifyLLMOutput(text) {
   return { kind: "finish", cleanedText, sanitizedBody, directives: dedupedDirectives };
 }
 
+// utils/vrWorld/sarEnvelopeCore.ts
+var planFromSARModuleSnapshot = (snapshot) => {
+  if (!snapshot || !snapshot.character && !snapshot.user) return null;
+  const character = snapshot.character;
+  const user = snapshot.user;
+  const hasActiveEffect = character?.phase === "active" || user?.phase === "active";
+  const hasAfterglow = character?.phase === "afterglow" || user?.phase === "afterglow";
+  return { character, user, hasActiveEffect, hasAfterglow, requiresEnvelope: hasActiveEffect };
+};
+var isPlainSARChatActionOnlyChunk = (text) => {
+  const clean = text.trim();
+  if (!clean) return false;
+  return /^(?:(?:（[^（）]*）|\([^()]*\)|\*[^*\n]+\*)\s*)+[。！？!?…～~—-]*$/s.test(clean);
+};
+var isSARChatActionOnlyChunk = (text) => {
+  const bilingualParts = text.split(/%%BILINGUAL%%/i).map((part) => part.trim()).filter(Boolean);
+  return bilingualParts.length > 0 && bilingualParts.every(isPlainSARChatActionOnlyChunk);
+};
+var isSARChatHtmlPlaceholder = (text) => /^\[HTML\s*卡片\]$/i.test(text.trim());
+var consumeSARChatSurfaceChunk = (canonicalChunk, surfaceChunks, startIndex) => {
+  let index = Math.max(0, startIndex);
+  if (isSARChatHtmlPlaceholder(canonicalChunk)) {
+    if (surfaceChunks[index] && isSARChatHtmlPlaceholder(surfaceChunks[index])) index += 1;
+    return { nextIndex: index };
+  }
+  if (isSARChatActionOnlyChunk(canonicalChunk)) {
+    if (surfaceChunks[index] && isSARChatActionOnlyChunk(surfaceChunks[index])) index += 1;
+    return { nextIndex: index };
+  }
+  while (surfaceChunks[index] && (isSARChatActionOnlyChunk(surfaceChunks[index]) || isSARChatHtmlPlaceholder(surfaceChunks[index]))) index += 1;
+  const surface = surfaceChunks[index];
+  return { surface, nextIndex: surface === void 0 ? index : index + 1 };
+};
+var tag = (raw, name) => {
+  const match = raw.match(new RegExp(`<${name}>\\s*([\\s\\S]*?)\\s*</${name}>`, "i"));
+  const value = match?.[1]?.trim();
+  return value || void 0;
+};
+var parseSARModuleReply = (raw, plan) => {
+  if (!plan.requiresEnvelope) return { canonical: raw, enveloped: false };
+  const body = tag(raw, "SAR_MODULE_OUTPUT") || raw;
+  const canonical = tag(body, "CHAR_TRUE");
+  if (!canonical) return { canonical: raw.trim(), enveloped: false };
+  return {
+    canonical,
+    assistantSurface: plan.character?.phase === "active" ? tag(body, "CHAR_SURFACE") : void 0,
+    userSurface: plan.user?.phase === "active" ? tag(body, "USER_SURFACE") : void 0,
+    enveloped: true
+  };
+};
+var createSARModuleSurfaceMeta = (state, surface) => {
+  const clean = surface.trim();
+  if (!clean || state.phase !== "active") return void 0;
+  return {
+    version: 1,
+    runId: state.runId,
+    moduleId: state.moduleId,
+    moduleTitle: state.moduleTitle,
+    target: state.target,
+    phase: "active",
+    surface: clean,
+    canonicalField: "content",
+    surfaceField: "metadata.sarModuleSurface.surface"
+  };
+};
+
+// worker/amsg/src/sarEnvelope.ts
+var AMSG_SAR_META_KEY = "amsgSar";
+var amsgSarUserSurfaceKey = (clientTaskId) => `sar_user_surface:${clientTaskId}`;
+var amsgSarSnapshotKey = (clientTaskId) => `sar_snapshot:${clientTaskId}`;
+var amsgSarSurfaceKey = (clientTaskId, segmentIndex) => `sar_surface:${clientTaskId}:${segmentIndex}`;
+var SAR_SURFACE_BANNER_MAX = 100;
+var clipSarSurfaceBanner = (banner) => {
+  const chars = Array.from(banner);
+  return chars.length <= SAR_SURFACE_BANNER_MAX ? banner : `${chars.slice(0, SAR_SURFACE_BANNER_MAX - 1).join("")}\u2026`;
+};
+var isPlainObject2 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+var isSurfaceSource = (value) => isPlainObject2(value) && typeof value.phase === "string";
+var readSarSnapshot = (metadata) => {
+  const raw = metadata?.[AMSG_SAR_META_KEY];
+  if (!isPlainObject2(raw) || raw.v !== 1) return null;
+  if (raw.character !== void 0 && !isSurfaceSource(raw.character)) return null;
+  if (raw.user !== void 0 && !isSurfaceSource(raw.user)) return null;
+  return raw;
+};
+var stripSarSnapshot = (metadata) => {
+  const { [AMSG_SAR_META_KEY]: _snapshot, ...rest } = metadata ?? {};
+  return rest;
+};
+var SURFACE_BLOCK_RE = /<(CHAR_SURFACE|USER_SURFACE)>[\s\S]*?(?:<\/\1>|(?=<\/?(?:SAR_MODULE_OUTPUT|CHAR_TRUE|CHAR_SURFACE|USER_SURFACE)>)|$)/gi;
+var PLACEHOLDER = String.fromCharCode(5);
+var PLACEHOLDER_RE = new RegExp(`${PLACEHOLDER}(\\d+)${PLACEHOLDER}`, "g");
+var maskSarSurfaceBlocks = (text) => {
+  const blocks = [];
+  const masked = text.replace(SURFACE_BLOCK_RE, (block) => {
+    blocks.push(block);
+    return `${PLACEHOLDER}${blocks.length - 1}${PLACEHOLDER}`;
+  });
+  return {
+    masked,
+    restore: (value) => blocks.length === 0 ? value : value.replace(PLACEHOLDER_RE, (_m, n) => blocks[Number(n)] ?? "")
+  };
+};
+var ENVELOPE_TAG_RE = /<\/?(?:SAR_MODULE_OUTPUT|CHAR_TRUE|CHAR_SURFACE|USER_SURFACE)>/gi;
+var stripEnvelopeTags = (text) => text.replace(ENVELOPE_TAG_RE, "").trim();
+var closeOpenTag = (text, name, stoppers) => {
+  const open = new RegExp(`<${name}>`, "i").exec(text);
+  if (!open || new RegExp(`</${name}>`, "i").test(text)) return text;
+  const after = open.index + open[0].length;
+  const stop = new RegExp(stoppers.join("|"), "i").exec(text.slice(after));
+  const at = stop ? after + stop.index : text.length;
+  return `${text.slice(0, at)}</${name}>${text.slice(at)}`;
+};
+var repairEnvelope = (text) => {
+  let repaired = closeOpenTag(text, "CHAR_TRUE", ["<CHAR_SURFACE>", "<USER_SURFACE>", "</SAR_MODULE_OUTPUT>"]);
+  repaired = closeOpenTag(repaired, "CHAR_SURFACE", ["<USER_SURFACE>", "<CHAR_TRUE>", "</SAR_MODULE_OUTPUT>"]);
+  repaired = closeOpenTag(repaired, "USER_SURFACE", ["<CHAR_SURFACE>", "<CHAR_TRUE>", "</SAR_MODULE_OUTPUT>"]);
+  return repaired;
+};
+var parseSarEnvelopeRounds = (rounds, plan) => {
+  const texts = rounds.filter((round) => round.trim().length > 0);
+  if (!plan.requiresEnvelope) return { canonical: texts.join("\n"), enveloped: false, pieces: [] };
+  const pieces = [];
+  let enveloped = false;
+  let userSurface;
+  for (const text of texts) {
+    const parsed = parseSARModuleReply(repairEnvelope(text), plan);
+    if (parsed.enveloped) {
+      enveloped = true;
+      if (parsed.userSurface) userSurface = parsed.userSurface;
+    }
+    const canonical = stripEnvelopeTags(parsed.canonical);
+    if (!canonical) continue;
+    const surface = parsed.enveloped && parsed.assistantSurface ? stripEnvelopeTags(parsed.assistantSurface) : "";
+    pieces.push({ canonical, ...surface ? { surface } : {} });
+  }
+  return {
+    canonical: pieces.map((p) => p.canonical).join("\n"),
+    enveloped,
+    pieces,
+    ...userSurface ? { userSurface } : {}
+  };
+};
+var isEmojiSegment = (seg) => /^\[\[SEND_EMOJI[:：]/i.test(seg.raw.trim());
+var isHtmlSegment = (seg) => /^\[html\][\s\S]*\[\/html\]$/i.test(seg.raw.trim());
+var TRANSLATION_BLOCK_RE = /<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>([\s\S]*?)<\/译文>\s*<\/翻译>/;
+var alignKey = (seg) => {
+  const translation = seg.raw.match(TRANSLATION_BLOCK_RE);
+  if (translation) {
+    const original = translation[1].trim();
+    const translated = translation[2].trim();
+    return original && translated ? `${original}
+%%BILINGUAL%%
+${translated}` : original || translated;
+  }
+  return seg.sanitized;
+};
+var segmentSurface = (surfaceText) => {
+  const prepared = surfaceText.replace(/\[html\][\s\S]*?\[\/html\]/gi, "\n").replace(/\[\[[\s\S]*?\]\]/g, "");
+  return sanitizeIntoSegments(prepared).filter((seg) => !isEmojiSegment(seg) && !isHtmlSegment(seg));
+};
+var alignSarSurfaceSegments = (canonicalSegments, surfaceText) => {
+  const surfaceSegs = segmentSurface(surfaceText);
+  const surfaceKeys = surfaceSegs.map(alignKey);
+  let index = 0;
+  return canonicalSegments.map((seg) => {
+    if (isEmojiSegment(seg) || isHtmlSegment(seg)) return void 0;
+    const consumed = consumeSARChatSurfaceChunk(alignKey(seg), surfaceKeys, index);
+    index = consumed.nextIndex;
+    if (consumed.surface === void 0) return void 0;
+    const matched = surfaceSegs[consumed.nextIndex - 1];
+    return matched ? { surface: matched.raw, banner: matched.sanitized } : void 0;
+  });
+};
+var segmentCanonical = (text) => {
+  const scan = classifyLLMOutput(text);
+  return sanitizeIntoSegments(scan.kind === "finish" ? scan.cleanedText : scan.prefix);
+};
+var buildSarSurfaceSlots = (parse, segments) => {
+  const none = segments.map(() => void 0);
+  if (!parse.pieces.some((p) => p.surface)) return none;
+  if (parse.pieces.length === 1) return alignSarSurfaceSegments(segments, parse.pieces[0].surface ?? "");
+  const counts = parse.pieces.map((p) => segmentCanonical(p.canonical).length);
+  if (counts.reduce((a, b) => a + b, 0) !== segments.length) {
+    return alignSarSurfaceSegments(
+      segments,
+      parse.pieces.map((p) => p.surface).filter((s) => !!s).join("\n")
+    );
+  }
+  const slots = [];
+  let offset = 0;
+  parse.pieces.forEach((piece, i) => {
+    const slice = segments.slice(offset, offset + counts[i]);
+    offset += counts[i];
+    slots.push(...piece.surface ? alignSarSurfaceSegments(slice, piece.surface) : slice.map(() => void 0));
+  });
+  return slots;
+};
+
 // worker/amsg/src/agentic.ts
 var createFireSessionState = () => ({
   narrations: [],
@@ -13386,13 +13585,17 @@ var classifyNativeToolCalls = (rawToolCalls, manageToolNames, mcpResolve) => {
 };
 function processLLMRound(state, llmOutputText, build, mcp, schedule, iteration, maxToolIterations = DEFAULT_TOOL_ITERATIONS) {
   const isFinalRound = typeof iteration === "number" && iteration >= maxToolIterations - 1;
+  const sarPlan = planFromSARModuleSnapshot(build.sar ?? null);
+  const sarMask = sarPlan?.requiresEnvelope ? maskSarSurfaceBlocks(llmOutputText) : null;
+  const roundText = sarMask ? sarMask.masked : llmOutputText;
+  const restoreSurfaces = (text) => sarMask ? sarMask.restore(text) : text;
   const nativeToolCalls = mcp?.nativeToolCalls ?? [];
-  const textCalls = mcp?.resolve.size ? extractTextFakedMcpCalls(llmOutputText, mcp.resolve, { alsoMatchPrefix: MCP_FIRE_NAME_PREFIX }) : [];
+  const textCalls = mcp?.resolve.size ? extractTextFakedMcpCalls(roundText, mcp.resolve, { alsoMatchPrefix: MCP_FIRE_NAME_PREFIX }) : [];
   const nativeScheduleCalls = schedule?.nativeToolCalls ?? [];
   const hasNativeSchedule = nativeScheduleCalls.some(
     (tc) => tc?.function?.name === AMSG_FIRE_SCHEDULE_TOOL
   );
-  const scheduleTextCalls = schedule ? extractFireScheduleTextCalls(llmOutputText) : [];
+  const scheduleTextCalls = schedule ? extractFireScheduleTextCalls(roundText) : [];
   const scheduleCalls = [
     ...nativeScheduleCalls,
     ...(hasNativeSchedule ? [] : scheduleTextCalls).map((c) => ({
@@ -13401,7 +13604,7 @@ function processLLMRound(state, llmOutputText, build, mcp, schedule, iteration, 
       function: { name: AMSG_FIRE_SCHEDULE_TOOL, arguments: JSON.stringify(c.args) }
     }))
   ];
-  const strippedText = scheduleTextCalls.length ? stripTextFakedMcpCalls(llmOutputText, scheduleTextCalls) : llmOutputText;
+  const strippedText = scheduleTextCalls.length ? stripTextFakedMcpCalls(roundText, scheduleTextCalls) : roundText;
   const scanText = textCalls.length ? stripTextFakedMcpCalls(strippedText, textCalls) : strippedText;
   const mcpToolCalls = nativeToolCalls.length > 0 ? nativeToolCalls : textCalls.map((c) => ({
     // id 只需在一轮的 assistant/tool 消息配对里唯一；本次 fire 内自增，绝不重号。
@@ -13416,7 +13619,7 @@ function processLLMRound(state, llmOutputText, build, mcp, schedule, iteration, 
   if (isToolRound) {
     const narration = result.kind === "tool-request" ? result.prefix : scanText;
     if (state.duplicateToolCalls < MAX_DUPLICATE_TOOL_CALLS && !isFinalRound) {
-      if (narration.trim()) state.narrations.push(narration);
+      if (narration.trim()) state.narrations.push(restoreSurfaces(narration));
       if (state.xhsShareNotes === null && XHS_SHARE_TAG_RE.test(narration)) {
         state.xhsShareNotes = [...build.xhsNotes ?? []];
       }
@@ -13426,9 +13629,11 @@ function processLLMRound(state, llmOutputText, build, mcp, schedule, iteration, 
       };
     }
   }
-  const thisRound = isToolRound ? "" : scanText;
-  const fullText = [...state.narrations, thisRound].filter((part) => part.trim().length > 0).join("\n");
-  const finalScan = fullText === scanText ? result : classifyLLMOutput(fullText);
+  const thisRound = isToolRound ? "" : restoreSurfaces(scanText);
+  const rounds = [...state.narrations, thisRound].filter((part) => part.trim().length > 0);
+  const fullText = rounds.join("\n");
+  const sarParse = sarPlan?.requiresEnvelope ? parseSarEnvelopeRounds(rounds, sarPlan) : null;
+  const finalScan = sarParse ? classifyLLMOutput(sarParse.canonical) : fullText === scanText ? result : classifyLLMOutput(fullText);
   const cleanedText = finalScan.kind === "finish" ? finalScan.cleanedText : finalScan.prefix;
   const directives = attachSceneSong(
     finalScan.kind === "finish" ? finalScan.directives : [],
@@ -13449,12 +13654,31 @@ function processLLMRound(state, llmOutputText, build, mcp, schedule, iteration, 
       ...scheduleChanges.length > 0 ? { scheduleChanges } : {}
     };
   }
+  const sarCharacter = build.sar?.character;
+  const surfaceSlots = sarParse && sarCharacter?.phase === "active" ? buildSarSurfaceSlots(sarParse, segments) : [];
+  const sarLastMeta = {
+    ...build.sar ? { [AMSG_SAR_META_KEY]: build.sar } : {},
+    ...sarParse?.userSurface ? { amsgSarUserSurface: sarParse.userSurface } : {}
+  };
+  const lastMeta = finishMeta || Object.keys(sarLastMeta).length > 0 ? { ...finishMeta ?? {}, ...sarLastMeta } : void 0;
   const lastIdx = segments.length - 1;
   return {
     decision: "finish",
-    pushPayloads: segments.map(
-      (seg, i) => buildScheduledPush(seg.raw, build, i === lastIdx ? finishMeta : void 0, seg.sanitized)
-    )
+    pushPayloads: segments.map((seg, i) => {
+      const slot = surfaceSlots[i];
+      const surfaceMeta = slot && sarCharacter ? createSARModuleSurfaceMeta(sarCharacter, slot.surface) : void 0;
+      const extra = {
+        ...surfaceMeta ? { amsgSarSurface: surfaceMeta } : {},
+        ...i === lastIdx ? lastMeta ?? {} : {}
+      };
+      return buildScheduledPush(
+        seg.raw,
+        build,
+        Object.keys(extra).length > 0 ? extra : void 0,
+        // 外显横幅截短：这条 push 还要装外显 meta，别把单段正文的字节预算吃掉一半。
+        surfaceMeta && slot ? clipSarSurfaceBanner(slot.banner) : seg.sanitized
+      );
+    })
   };
 }
 function buildScheduledPush(message, build, extraMeta, bannerBody) {
@@ -13470,7 +13694,8 @@ function buildScheduledPush(message, build, extraMeta, bannerBody) {
     messageSubtype: "chat",
     taskId: build.taskId,
     metadata: {
-      ...build.metadata,
+      // SAR 快照不许摊进每一条（它只随最后一条经 extraMeta 回去）；调用方已摘过，这里兜一道。
+      ...stripSarSnapshot(build.metadata),
       amsgOccurrenceMs: build.occurrenceMs,
       ...extraMeta ?? {}
     },
@@ -14108,13 +14333,31 @@ var OFFLOAD_BATONS = [
     log: "[amsg:emotion] \u8BC4\u4F30\u7ED3\u679C\u65C1\u8DEF\u5B58\u50A8"
   },
   {
+    field: "amsgSar",
+    refField: "amsgSarRef",
+    key: amsgSarSnapshotKey,
+    log: "[amsg:sar] \u6A21\u5757\u5FEB\u7167\u65C1\u8DEF\u5B58\u50A8"
+  },
+  {
+    field: "amsgSarUserSurface",
+    refField: "amsgSarUserSurfaceRef",
+    key: amsgSarUserSurfaceKey,
+    log: "[amsg:sar] \u7528\u6237\u5916\u663E\u65C1\u8DEF\u5B58\u50A8"
+  },
+  {
+    field: "amsgSarSurface",
+    refField: "amsgSarSurfaceRef",
+    key: amsgSarSurfaceKey,
+    log: "[amsg:sar] \u672C\u6BB5\u5916\u663E\u65C1\u8DEF\u5B58\u50A8"
+  },
+  {
     field: "xhsSession",
     refField: "xhsSessionRef",
     key: amsgXhsSessionKey,
     log: "[amsg:agentic] XHS \u4F1A\u8BDD\u6570\u636E\u65C1\u8DEF\u5B58\u50A8"
   }
 ];
-var offloadOversizedPush = async (payload, writeState, charId, clientTaskId) => {
+var offloadOversizedPush = async (payload, writeState, charId, clientTaskId, segmentIndex = 0) => {
   if (pushFits(payload)) return payload;
   if (!clientTaskId) {
     console.warn("[amsg:offload] push \u8D85\u9650\u5374\u6CA1\u6709 clientTaskId\uFF0C\u65C1\u8DEF\u5B58\u50A8\u7528\u4E0D\u4E0A", {
@@ -14134,7 +14377,7 @@ var offloadOversizedPush = async (payload, writeState, charId, clientTaskId) => 
     const meta = readMeta(current);
     const value = meta[baton.field];
     if (!hasOffloadable(value)) continue;
-    const key = baton.key(clientTaskId);
+    const key = baton.key(clientTaskId, segmentIndex);
     await writeState(amsgStateNamespace(charId), [
       { key, value: typeof value === "string" ? value : JSON.stringify(value) }
     ]);
@@ -15076,7 +15319,10 @@ var amsgHooks = {
         messageType,
         // 摘掉评估配置再交出去：它里头是用户副 API 的 apiKey，而 metadata 会被整个
         // 摊进每条 push 的 payload（见 agentic 的 buildScheduledPush）。见 stripEmotionEvalSpec。
-        metadata: stripEmotionEvalSpec(ctx.metadata),
+        // SAR 快照同样摘掉，单独经 sar 传入：它只随最后一条 push 原样回去一次。
+        metadata: stripSarSnapshot(stripEmotionEvalSpec(ctx.metadata)),
+        // SAR 临时模块快照（形状不对就当没有）。要求信封时 processLLMRound 在分段前拆信封。
+        sar: readSarSnapshot(ctx.metadata),
         occurrenceMs: stash.occurrenceMs,
         // round 1 XHS 工具抓到的笔记 / xsecToken 快照：finish 时按 directive 引用
         // 挑选后随最后一条 push 带回客户端（客户端离线跑不了 round 1，缺这份
@@ -15226,12 +15472,13 @@ var amsgHooks = {
       }
       if (stash.charId) {
         const budgeted = [];
-        for (const payload of payloads) {
+        for (const [index, payload] of payloads.entries()) {
           budgeted.push(await offloadOversizedPush(
             payload,
             ctx.writeState,
             stash.charId,
-            stash.clientTaskId
+            stash.clientTaskId,
+            index
           ));
         }
         payloads = budgeted;
