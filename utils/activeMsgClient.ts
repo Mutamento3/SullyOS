@@ -2976,22 +2976,28 @@ export const ActiveMsgClient = {
     const encryptStateEntries = (updatedAt: number) => encryptPayload(client, {
       entries: stateEntries.map((entry) => ({ ...entry, updatedAt })),
     });
-    const [encryptedTask, initialState] = await Promise.all([
+    // 凭据行随这一轮一起交给 worker，由它在建任务前照这份覆盖——每一轮都带，不看底账。
+    // 底账只记得「这台设备传过什么」，云端那行被别的入口（iOS 上 Safari 和主屏 App 各存
+    // 各的）或别的 Worker 改过时它还写着「传过了」，任务就会一直拿别人留下的凭据跑。
+    // 请求体多几百字节、worker 多写一两行 D1，不多一次往返。
+    const [encryptedTask, initialState, credPayload] = await Promise.all([
       encryptPayload(client, taskPayload),
       encryptStateEntries(stampedAt),
+      credRows.length > 0 ? encryptPayload(client, { credentials: credRows }) : Promise.resolve(undefined),
     ]);
     // 重发那一轮要换成新盖的戳，所以这份是可变的。
     let statePayload = initialState;
 
-    // 凭据行先落地再建任务（上游建任务前会挨个查引用）。只有值变过才真的发请求，
-    // 所以常态下这一步是零请求——不给「用户正等着回复」这条路白加一次往返。
+    // 旧 bundle 的 worker 不认 credPayload，凭据行还得靠这一步单独登记（上游建任务前会
+    // 挨个查引用）。只有值跟底账不一样才真的发请求，常态下是零请求；新 bundle 上它最多是
+    // 值刚变的那一轮多写一遍。
     if (credRows.length > 0) await putLlmCredentialRows(credRows);
 
     const postInstantChat = () => fetchWithAuthRaw('instant-chat', globalConfig, {
       method: 'POST',
       // 外壳是明文：里头两个信封已经加密好，别再给外壳挂加密头（包装层会当它是整体密文）。
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ statePayload, taskPayload: encryptedTask }),
+      body: JSON.stringify({ statePayload, taskPayload: encryptedTask, ...(credPayload ? { credPayload } : {}) }),
     }, '即时对话');
 
     let { status, body } = await postInstantChat();
@@ -3017,6 +3023,9 @@ export const ActiveMsgClient = {
     if (status !== 202 || typeof body?.uuid !== 'string' || !body.uuid) {
       throw new Error(describeInstantChatFailure(status, body));
     }
+    // worker 说凭据行已经照这一轮覆盖过了：底账跟着对齐，后台补传和排程那几条路才不会
+    // 拿一份过期的「传过什么」去判断。旧 bundle 不回这个键，不记。
+    if (body.credentialsSynced === true) rememberCredRows(credRows);
     return { uuid: body.uuid, clientTaskId };
   },
 
