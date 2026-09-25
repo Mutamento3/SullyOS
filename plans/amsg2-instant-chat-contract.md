@@ -32,15 +32,21 @@
   ```jsonc
   {
     "statePayload": "<加密信封：即 PUT /client-state 的完整 body>",
-    "taskPayload": "<加密信封：即 POST /schedule-message 的完整 body>"
+    "taskPayload": "<加密信封：即 POST /schedule-message 的完整 body>",
+    "credPayload": "<可选，加密信封：即 PUT /llm-credentials 的完整 body>"
   }
   ```
+
+  credPayload 装的是这一轮任务引用的凭据行（`char:<id>/instant`，评估时再加
+  `char:<id>/emotion`）。任务走 credRefs 时客户端**每一轮都带**，不看本地指纹底账：
+  底账只代表这一个入口传过什么，云端那行可能已被别的入口（iOS 上 Safari 与主屏 App
+  各存各的）或别的 Worker 改过。任务走内联凭据时不带。
 
   taskPayload（信封内）固定带 `immediate: true`（amsg-server 2.6.0-next.15 起：
   落库即到期，不带 `firstSendTime`）；顶替上一条时带 `supersedesUuid`（上游在
   建新任务的同一事务里取消旧的，原子）。外壳不再有明文 supersedesUuid。
 
-- 处理步骤（严格顺序，两个 await 失败即向客户端返回明确错误，不落任务）：
+- 处理步骤（严格顺序，任一步失败即向客户端返回明确错误，不落任务）：
   1. 内部 `upstream.fetch` 转发 `PUT /client-state`（statePayload）→ 必须成功。
      HTTP ok 还不够：上游按 updatedAt 条件写（旧不盖新），成功体 `data.skippedEntries`
      里点名了 `fire_pack` 条目时同样打回——`409 INSTANT_CHAT_STATE_STALE`，绝不落任务
@@ -49,10 +55,14 @@
      （`utils/amsgStateClock.ts`）、重新盖戳再发一次。设备时钟只要领先过真实时间，云端
      那一行就带着一个还没到的时刻，本地墙钟从此跨不过去，那个角色发一句挂一句，把系统
      时间调回来也没用；水位是这条路的唯一出路。对齐不动才是真被别人写了新的，那时不重发。
-  2. 内部转发 `POST /schedule-message`（taskPayload）→ 必须成功，拿到 uuid
+  2. 带了 credPayload 时，内部转发 `PUT /llm-credentials` → 必须成功（5xx 与第 1 步
+     同一把重试梯子；200 包 `success:false` 也算失败），失败回
+     `INSTANT_CHAT_CREDENTIALS_FAILED`（step `llm-credentials`），不落任务。
+  3. 内部转发 `POST /schedule-message`（taskPayload）→ 必须成功，拿到 uuid
      （顶替在上游事务内完成）。
-  3. 返回 `202 { status: 'accepted', uuid }`。
-  4. `ctx.waitUntil(upstream.scheduled(合成 event, env))` 立即触发一次 tick，
+  4. 返回 `202 { status: 'accepted', uuid }`；覆盖过凭据行时多带
+     `credentialsSynced: true`，客户端见到它才把本地底账对齐。
+  5. `ctx.waitUntil(upstream.scheduled(合成 event, env))` 立即触发一次 tick，
      捡起刚落的行（与真 cron 并发时由 claim/lease 天然互斥）。
 - `export default` 的 `fetch` / `scheduled` 签名补上第三个参数 `ctx`
   （上游签名只收两个参数，多传无害；`index.ts:1509-1510` 的注释要同步改）。
