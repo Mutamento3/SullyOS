@@ -117,7 +117,57 @@
   一笔 pending，收到末条推送时回填 Token）。它是**最后一次**模型调用的用量——带工具的
   一轮会连着调好几次模型，中间几次的数云端没留，所以跑过工具时那笔记录会标「只算末轮」。
 - 超限旁路：`amsgEmotionRef` / `amsgReasoningRef`（值挪进 client_state，键
-  `emotion_update:<clientTaskId>` / `reasoning:<clientTaskId>`）。
+  `emotion_update:<clientTaskId>` / `reasoning:<clientTaskId>`）；SAR 的三个引用键见下一小节。
+
+### SAR 临时模块（信封）
+
+角色或用户身上有 SAR 临时模块时，模型回复是一个 `<SAR_MODULE_OUTPUT>` 信封：
+`<CHAR_TRUE>` 是真意，`<CHAR_SURFACE>` 是角色台词被模块扭曲后的外显，`<USER_SURFACE>`
+是用户本轮输入的外显。信封的解析和逐泡对齐用的是前后端共用的
+`utils/vrWorld/sarEnvelopeCore.ts`，worker 侧的拆分与对齐在 `worker/amsg/src/sarEnvelope.ts`。
+
+- 发侧 `amsgSar`（任务 metadata，形状 `AmsgSarModuleSnapshot`，`v: 1`）：请求发出那一刻冻结
+  的模块快照。只在角色或用户身上有模块（active 或 afterglow）时存在。形状不对（不是对象 /
+  `v` 不是 1）时 worker 当它不存在。
+- 回程 `amsgSar`：发侧那份原样挂回，**只挂末条 push**，其余各条都不带。只要发侧带了合法快照
+  就挂回，不看模型守没守信封、也不看是不是只剩余韵的轮次——客户端靠它写模块事件、推进回合。
+- 回程 `amsgSarSurface`（形状 `SARModuleSurfaceMeta`，`surface` 只放这一条对应的那段外显）：
+  角色模块 active、模型给了 CHAR_SURFACE 时，按 push 分段逐段对齐，对上的那条挂，对不上的不挂。
+  挂了的那条 `notification.body` 用这段外显的横幅文本（界面默认显示外显，锁屏也一样）；
+  `message` 仍是真意，落库为 content。
+  横幅截到 100 个字符（超出时末尾是「…」）；metadata 里的外显不截。普通回合的横幅不受影响。
+- 回程 `amsgSarUserSurface`：用户模块 active、模型给了 USER_SURFACE 时挂在末条 push，
+  值是 USER_SURFACE 原文，worker 不做任何解析。
+
+一条 push 装不下时，这三样和别的大块数据一起旁路进 client_state，push 里只留引用键
+（客户端按引用键取回，用法同 `amsgReasoningRef`）：
+
+| 字段 | 引用键 | client_state 键 | 存的值 |
+|---|---|---|---|
+| `amsgSar` | `amsgSarRef` | `sar_snapshot:<clientTaskId>` | 快照 JSON |
+| `amsgSarUserSurface` | `amsgSarUserSurfaceRef` | `sar_user_surface:<clientTaskId>` | USER_SURFACE 原文 |
+| `amsgSarSurface` | `amsgSarSurfaceRef` | `sar_surface:<clientTaskId>:<段序号>` | 这一条的外显 meta JSON |
+
+段序号是这条 push 在本轮里的下标（0 起），同一轮几条 push 各存各的。挪的顺序：思考链 →
+情绪评估 → `amsgSar` → `amsgSarUserSurface` → 本条 `amsgSarSurface` → XHS 会话数据，
+每挪一样就重新量一次，装得下就停。
+
+fire 时的处理规则：
+
+- 需要信封（有模块 active）时，worker 在 finish、分段之前拆信封。分段、
+  directives、self_log 只认 CHAR_TRUE（情绪评估与主生成并行、读的是请求消息，不读这一轮的
+  回复）；CHAR_SURFACE / USER_SURFACE 不参与标签识别，里面写的标签（工具、排程、副作用）
+  一律不执行。
+- 逐轮拆：工具循环跑了几轮，就把每一轮的输出（补上没写完的闭合标签后）分别交给
+  `parseSARModuleReply`，每一轮自己决定降级：
+  - 这一轮守了信封 → 真意取它的 CHAR_TRUE，外显取它的 CHAR_SURFACE，只对齐这一轮的真意段；
+  - 这一轮没守（拆不出非空的 CHAR_TRUE）→ 这一轮原文照发、不带外显，只剥掉散落的信封标签；
+  - 各轮真意按顺序拼接；USER_SURFACE 取最后一个给了它的那一轮。
+  没写外层 `<SAR_MODULE_OUTPUT>`、或 CHAR_SURFACE 写在 CHAR_TRUE 前面，都照样认。
+- 只剩余韵（afterglow，不要求信封）时不拆，原文照旧分段。
+- 对齐口径与客户端落库一致：只有台词占外显槽位。表情段（`[[SEND_EMOJI:…]]`）、`[html]` 段
+  不占；纯括号动作段按共用的 `consumeSARChatSurfaceChunk` 处理；内置翻译 `<翻译>` 块、
+  `<语音>` + `<字幕>` 块各占一格。外显那一侧先剔掉 `[[...]]` 指令和 `[html]` 块再分段。
 
 ## outbox（push 丢失的拉取兜底）
 
