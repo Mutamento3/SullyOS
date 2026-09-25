@@ -31,6 +31,7 @@ import {
   decryptFromStorage,
   deriveUserEncryptionKey,
   measurePushPayload,
+  SCHEMA_VERSION,
   summarizeErrorCause,
 } from '@rei-standard/amsg-server/cloudflare';
 import { stripReasoningTags } from '@rei-standard/amsg-shared';
@@ -123,7 +124,8 @@ import {
   type AmsgToolPack,
 } from '../../../utils/amsgToolPack';
 import { buildRealtimeWorldBlock } from './realtimeWorld';
-import { handleSelfUpdate } from './selfUpdate';
+import { authorizeSelfUpdate, handleSelfUpdate, resolveScriptName } from './selfUpdate';
+import { ensureSchemaOnce, readSelfUpdateState, recordManualSelfUpdate, runAutoUpdate } from './autoUpdate';
 import { handleCronTriggerRead, handleCronTriggerWrite, isCronTriggerAuthFailure } from './cronTrigger';
 import {
   buildMcpDirectHeaders,
@@ -203,6 +205,8 @@ interface Env extends NativeFcmEnv {
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
   CF_SCRIPT_NAME?: string;
+  /** 可选：成品包换个地方取（自己维护成品包的 fork、或拿测试 Worker 试新代码）。见 selfUpdate.resolveBundleUrl。 */
+  AMSG_BUNDLE_URL?: string;
   /**
    * 即时对话的起跳器（Durable Object）。类型上可选是因为老版本 Worker 上真的没有它，
    * 那种情况由 /instant-chat 明确报「需要更新 Worker」，见 instantChat.kickInstantTick。
@@ -3271,14 +3275,16 @@ const readServerVersion = async (request: Request, env: Env) => {
  *   GET  /tick-report   定时任务细账：过期任务各自卡在哪、报错原文、整轮报错（见 ./tickReport，要共享密钥）
  *   POST /instant-chat  即时对话：一个请求受理一轮聊天（见 ./instantChat）
  *   POST /self-update   自己去取最新代码覆盖自己（见 ./selfUpdate，要共享密钥 + CF_API_TOKEN）
+ *   POST /self-update/check  App 冷启动时顺手问一句「该更新了没」，有节流（见 ./autoUpdate，认证同上）
  *   GET/POST /cron-trigger  查看 / 暂停 / 恢复自己的 cron trigger（见 ./cronTrigger，认证同上）
  *   其它请求            配置不全时直接 503 + 说明缺什么，不进上游
  */
-// 两个 handler 都只收 (request/event, env)：CF 还会给第三个参数 ctx，但这里用不上——
+// fetch 收第三个参数 ctx 只为 /self-update/check 一条路：它回 202 之后在 waitUntil 里把检查跑完
+// （几秒的事，30 秒上限够用；被掐了下一轮 cron 会再来）。别的路由都不用 ctx——
 // /instant-chat 回完 202 之后的那一跳跑在 InstantTickDO 的 alarm 里，不占这个请求的
-// 生命周期（waitUntil 只有 30 秒，见 InstantTickDO 的注释）。
+// 生命周期（waitUntil 只有 30 秒，见 InstantTickDO 的注释）。scheduled 只收 (event, env)。
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: { waitUntil(promise: Promise<unknown>): void }): Promise<Response> {
     const pathname = new URL(request.url).pathname.replace(/\/+$/, '') || '/';
     const method = request.method.toUpperCase();
 
@@ -3314,8 +3320,50 @@ export default {
           // 旧代码执行，版本号对上了不代表新逻辑真的在跑。
           backgroundJobs: true,
           workerVersion: AMSG_BUNDLE_VERSION,
+          // 自动更新：有没有这个能力（配没配 CF_API_TOKEN，不回值）+ 最近一次检查的结果。
+          // 读的是诊断表，D1 没绑上时读不到就是 null，不影响上面那些照常回答。
+          selfUpdate: {
+            supported: Boolean(env.CF_API_TOKEN?.trim()),
+            state: await readSelfUpdateState(env.DB as TickReportDb | undefined),
+          },
         },
       });
+    }
+
+    if (pathname.endsWith('/self-update/check')) {
+      if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+      if (method !== 'POST') {
+        return jsonWithCors(405, {
+          success: false,
+          error: { code: 'METHOD_NOT_ALLOWED', message: '/self-update/check 只接受 POST' },
+        });
+      }
+      // App 冷启动顺手问的一句「该更新了没」。门跟 /self-update 一样高（它同样能让 Worker
+      // 覆盖自己的代码）。回 202 就走人：检查本身在 waitUntil 里跑，页面关了也不影响；
+      // 结果记进诊断表，设置页从 /config-check 读。节流在 runAutoUpdate 里，这里不重复判。
+      const gate = await authorizeSelfUpdate(request, env);
+      if (!gate.ok) {
+        return jsonWithCors(gate.code === 'CF_TOKEN_MISSING' ? 400 : 401, {
+          success: false,
+          error: { code: gate.code, message: gate.message },
+        });
+      }
+      const db = env.DB as TickReportDb | undefined;
+      if (typeof db?.prepare !== 'function') {
+        return jsonWithCors(503, {
+          success: false,
+          error: { code: 'WORKER_CONFIG_MISSING', message: '没绑 D1，记不下检查结果，先把 DB 绑上。' },
+        });
+      }
+      const check = runAutoUpdate(env, db, {
+        source: 'client',
+        scriptName: resolveScriptName(env, request.url),
+      }).catch((error) => {
+        console.warn('[amsg:auto-update] 冷启动触发的检查没跑完', error);
+      });
+      if (ctx?.waitUntil) ctx.waitUntil(check);
+      else await check;
+      return jsonWithCors(202, { success: true, data: { accepted: true } });
     }
 
     if (pathname.endsWith('/debug')) {
@@ -3350,6 +3398,8 @@ export default {
       // 排在下面那道配置门之前：配置缺了一半正是想更新一版试试的时候，
       // 被门挡住反而没法自救。它自己校验共享密钥，不吃这道门的豁免。
       const result = await handleSelfUpdate(request, env);
+      // 装上的那份指纹是之后自动检查的比对基准；换了代码也要让新代码下一跳重新查表。
+      await recordManualSelfUpdate(env.DB as TickReportDb | undefined, result);
       return jsonWithCors(result.ok ? 200 : 400, {
         success: result.ok,
         data: result.ok ? result : undefined,
@@ -3471,7 +3521,20 @@ export default {
     // 整轮出错时上游把原因放在返回值里（同一份也会经 onError 记一行日志）。CF 不看
     // scheduled 的返回值，这里把它记进库：日志大多数人找不到，体检面板的定时任务细账
     // 读的是库里这一份（见 ./tickReport）。只在出错时写，正常的一跳什么都不写。
+    // 换过代码（自更新、Sync fork、wrangler deploy 都算）之后的第一跳先把这版要的表补齐，
+    // 不然缺表缺列会让下面那一跳每分钟静默挂。每个表结构版本只真查一次，见 ensureSchemaOnce。
+    await ensureSchemaOnce(env.DB as TickReportDb | undefined, SCHEMA_VERSION, () => upstream.ensureSchema(env));
     const outcome = await upstream.scheduled(event, env);
     await recordTickOutcome(env.DB as unknown as TickReportDb, outcome);
+    // 投递完再看要不要更新自己（有节流，绝大多数跳在这里只读一行就走）。cron 路上没有
+    // 请求 URL，脚本名只能靠 CF_SCRIPT_NAME——一键部署和「补钥匙」写的都有这一条。
+    try {
+      await runAutoUpdate(env, env.DB as TickReportDb, {
+        source: 'cron',
+        scriptName: env.CF_SCRIPT_NAME?.trim() || null,
+      });
+    } catch (error) {
+      console.warn('[amsg:auto-update] 这一跳的自动更新检查没跑完', error);
+    }
   },
 };

@@ -4563,6 +4563,45 @@ describe('即时对话的接线', () => {
     expect(typeof body.data.workerVersion).toBe('string');
   });
 
+  it('/config-check 报自更新能力：配了 CF_API_TOKEN 才算有，检查过没有从诊断表读', async () => {
+    const without = await (await call('https://w.example/config-check')).json();
+    expect(without.data.selfUpdate).toEqual({ supported: false, state: null });
+    const withToken = { ...fullEnv, CF_API_TOKEN: 'cf' };
+    const body = await (await call('https://w.example/config-check', {}, withToken)).json();
+    expect(body.data.selfUpdate.supported).toBe(true);
+    // 桩出来的 DB 读不了诊断表 → 从没查过
+    expect(body.data.selfUpdate.state).toBeNull();
+  });
+
+  describe('/self-update/check（冷启动顺手问一句该更新了没）', () => {
+    const checkEnv = { ...fullEnv, AMSG_SERVER_TOKEN: 'shared', CF_API_TOKEN: 'cf', CF_SCRIPT_NAME: 'w' };
+    const post = (env: any, headers: Record<string, string> = { 'X-Client-Token': 'shared' }, ctx?: any) =>
+      (worker as any).fetch(new Request('https://w.example/self-update/check', { method: 'POST', headers }), env, ctx ?? { waitUntil: () => {} });
+
+    it('门跟 /self-update 一样高：共享密钥对不上 401、没配 CF_API_TOKEN 400', async () => {
+      expect((await post(checkEnv, { 'X-Client-Token': 'wrong' })).status).toBe(401);
+      expect((await post({ ...checkEnv, AMSG_SERVER_TOKEN: undefined })).status).toBe(401);
+      const noToken = await post({ ...checkEnv, CF_API_TOKEN: undefined });
+      expect(noToken.status).toBe(400);
+      expect((await noToken.json()).error.code).toBe('CF_TOKEN_MISSING');
+    });
+
+    it('过了门就回 202 走人，检查本身塞进 waitUntil 跑', async () => {
+      const waited: Promise<unknown>[] = [];
+      const response = await post(checkEnv, undefined, { waitUntil: (p: Promise<unknown>) => waited.push(p) });
+      expect(response.status).toBe(202);
+      expect((await response.json()).data.accepted).toBe(true);
+      expect(waited).toHaveLength(1);
+      // 桩 DB 上跑不动，但必须吞掉而不是让 waitUntil 里的 promise 拒绝
+      await expect(waited[0]).resolves.toBeUndefined();
+    });
+
+    it('预检要放行，否则带自定义头的正式请求根本发不出去', async () => {
+      const response = await (worker as any).fetch(new Request('https://w.example/self-update/check', { method: 'OPTIONS' }), checkEnv);
+      expect(response.status).toBe(204);
+    });
+  });
+
   it('/config-check 绑定在就是 true', async () => {
     const withTick = { ...fullEnv, INSTANT_TICK: { idFromName: () => ({}), get: () => ({ kick: async () => {} }) } };
     const body = await (await call('https://w.example/config-check', {}, withTick)).json();

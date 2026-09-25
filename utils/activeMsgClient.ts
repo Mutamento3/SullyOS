@@ -17,6 +17,7 @@ import {
 } from '../types';
 import { getLastRealUserMessageAt } from './amsg2ExpireGuard';
 import { AMSG_BUNDLE_VERSION } from './amsgBundleVersion';
+import { parseAmsgSelfUpdateState, type AmsgSelfUpdateReport } from './amsgSelfUpdateState';
 import { buildTaskInstruction, resolveSendAtMs } from './amsgFireSchedule';
 import {
   getPendingTasks, isAmsg2EnabledForChar,
@@ -370,6 +371,23 @@ export const fetchWorkerTickReport = async (): Promise<AmsgTickReportResult> => 
   } catch (error: any) {
     return { ok: false, reason: error?.message || '连不上 Worker。' };
   }
+};
+
+/** probeWorkerVersion 的回执：版本对不对，外加那台 Worker 自动更新的近况。 */
+export interface AmsgWorkerVersionProbe {
+  state: 'current' | 'outdated' | 'unknown';
+  /** 那台 Worker 自报的版本；老 bundle 不报就是 null。 */
+  deployed: string | null;
+  /** 本 App 期望的版本，用来在界面上写「更新到 X」。 */
+  expected: string;
+  /** 自动更新：有没有这个能力 + 最近一次检查。老 bundle 不报这一段就是 null。 */
+  autoUpdate: AmsgSelfUpdateReport | null;
+}
+
+const parseSelfUpdateReport = (raw: unknown): AmsgSelfUpdateReport | null => {
+  const value = raw as { supported?: unknown; state?: unknown } | null;
+  if (!value || typeof value !== 'object' || typeof value.supported !== 'boolean') return null;
+  return { supported: value.supported, state: parseAmsgSelfUpdateState(value.state) };
 };
 
 /**
@@ -3271,23 +3289,43 @@ export const ActiveMsgClient = {
    *   - 老 bundle 根本不报这个字段 → outdated（它确实旧，只是旧到还不会自报家门）；
    *   - 网络不通 / 还没连上 → unknown（别在用户断网时催他更新）。
    */
-  async probeWorkerVersion(): Promise<{
-    state: 'current' | 'outdated' | 'unknown';
-    /** 那台 Worker 自报的版本；老 bundle 不报就是 null。 */
-    deployed: string | null;
-    /** 本 App 期望的版本，用来在界面上写「更新到 X」。 */
-    expected: string;
-  }> {
+  async probeWorkerVersion(): Promise<AmsgWorkerVersionProbe> {
     const expected = AMSG_BUNDLE_VERSION;
     try {
       const config = await ensureWorkerReady();
       const { status, body } = await fetchWithAuthRaw('config-check', config, { method: 'GET' }, '后端版本探测');
-      if (status !== 200 || body?.success !== true) return { state: 'unknown', deployed: null, expected };
+      if (status !== 200 || body?.success !== true) return { state: 'unknown', deployed: null, expected, autoUpdate: null };
       const deployed = typeof body?.data?.workerVersion === 'string' ? body.data.workerVersion : null;
-      if (!deployed) return { state: 'outdated', deployed: null, expected };
-      return { state: deployed === expected ? 'current' : 'outdated', deployed, expected };
+      const autoUpdate = parseSelfUpdateReport(body?.data?.selfUpdate);
+      if (!deployed) return { state: 'outdated', deployed: null, expected, autoUpdate };
+      return { state: deployed === expected ? 'current' : 'outdated', deployed, expected, autoUpdate };
     } catch {
-      return { state: 'unknown', deployed: null, expected };
+      return { state: 'unknown', deployed: null, expected, autoUpdate: null };
+    }
+  },
+
+  /**
+   * 让后端自己看一眼该不该更新（`POST /self-update/check`，见 worker/amsg/src/autoUpdate.ts）。
+   *
+   * App 冷启动时顺手发的（见 utils/amsgAutoUpdateTrigger.ts：版本对不上时走的是 selfUpdateWorker，
+   * 这条只在版本对得上、想让它按指纹再看一眼时用）。只是按一下门铃——worker 回 202 就走人，检查在它那边后台跑，节流也在它那边；结果记进
+   * 它的诊断表，设置页从 probeWorkerVersion 的 autoUpdate 里读。
+   *
+   *   - 'accepted'：worker 收下了（真查不查看它自己的节流）；
+   *   - 'unsupported'：旧版 worker 没这条路（404），或没配 CF_API_TOKEN、没设共享密钥；
+   *   - 'failed'：没连上或别的错。
+   */
+  async requestWorkerUpdateCheck(): Promise<'accepted' | 'unsupported' | 'failed'> {
+    try {
+      const config = await ensureWorkerReady();
+      const { status, body } = await fetchWithAuthRaw('self-update/check', config, { method: 'POST' }, '后端更新检查');
+      if (status === 202 && body?.success === true) return 'accepted';
+      if (status === 404 || body?.error?.code === 'NOT_FOUND') return 'unsupported';
+      const code = body?.error?.code;
+      if (code === 'CF_TOKEN_MISSING' || code === 'SERVER_TOKEN_REQUIRED') return 'unsupported';
+      return 'failed';
+    } catch {
+      return 'failed';
     }
   },
 

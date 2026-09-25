@@ -7629,7 +7629,7 @@ function createSingleUserCloudflareWorker(buildConfig, options = {}) {
 }
 
 // utils/amsgBundleVersion.ts
-var AMSG_BUNDLE_VERSION = "2026-09-22";
+var AMSG_BUNDLE_VERSION = "2026-09-25";
 
 // utils/amsgTaskKinds.ts
 var AMSG_TASK_KIND_KEY = "amsgKind";
@@ -9903,6 +9903,17 @@ var handleInstantChat = async (args) => {
 // worker/amsg/src/selfUpdate.ts
 var CF_API = "https://api.cloudflare.com/client/v4";
 var BUNDLE_URL = "https://raw.githubusercontent.com/Tosd0/sullyos-workers/main/amsg/worker.bundle.js";
+function resolveBundleUrl(env) {
+  const configured = env.AMSG_BUNDLE_URL?.trim();
+  if (!configured) return BUNDLE_URL;
+  try {
+    const url = new URL(configured);
+    if (url.protocol === "https:") return url.toString();
+  } catch {
+  }
+  console.warn("[amsg:self-update] AMSG_BUNDLE_URL \u4E0D\u662F https \u5730\u5740\uFF0C\u6539\u7528\u9ED8\u8BA4\u6210\u54C1\u5305");
+  return BUNDLE_URL;
+}
 var MAIN_MODULE = "worker.bundle.js";
 var FALLBACK_COMPATIBILITY_DATE = "2026-01-01";
 var FALLBACK_COMPATIBILITY_FLAGS = ["global_fetch_strictly_public"];
@@ -9989,10 +10000,18 @@ async function locateScript(env, token, scriptName) {
     message: `\u5728\u8FD9\u679A token \u80FD\u78B0\u5230\u7684 ${accounts.length} \u4E2A\u8D26\u53F7\u91CC\u90FD\u6CA1\u627E\u5230\u540D\u4E3A ${scriptName} \u7684 Worker\u3002\u8981\u4E48 token \u7684\u6743\u9650\u6CA1\u8986\u76D6\u5230\u5B83\u6240\u5728\u7684\u8D26\u53F7\uFF0C\u8981\u4E48 Worker \u540D\u5B57\u5BF9\u4E0D\u4E0A\uFF08\u53EF\u7528 CF_SCRIPT_NAME \u6307\u5B9A\uFF09\u3002`
   };
 }
-async function fetchLatestBundle() {
+function bundleFetchUrl(base, nowMs = Date.now()) {
+  const url = new URL(base);
+  url.searchParams.set("t", String(nowMs));
+  return url.toString();
+}
+async function fetchLatestBundle(env = {}) {
   let res;
   try {
-    res = await fetch(BUNDLE_URL, { headers: { "User-Agent": "sullyos-amsg-self-update" } });
+    res = await fetch(bundleFetchUrl(resolveBundleUrl(env)), {
+      headers: { "User-Agent": "sullyos-amsg-self-update" },
+      cache: "no-store"
+    });
   } catch (err6) {
     return { ok: false, message: `\u53D6\u4E0D\u5230\u6700\u65B0\u4EE3\u7801\uFF1A${err6.message}` };
   }
@@ -10005,7 +10024,8 @@ async function fetchLatestBundle() {
   if (!code.includes(BUNDLE_FINGERPRINT)) {
     return { ok: false, message: "\u53D6\u56DE\u6765\u7684\u6587\u4EF6\u4E0D\u50CF amsg \u7684 worker \u4EE3\u7801\uFF0C\u6CA1\u6709\u8986\u76D6\uFF0C\u5F53\u524D\u7248\u672C\u4E0D\u52A8\u3002" };
   }
-  return { ok: true, code };
+  const hash = (await sha256Hex(code)).slice(0, 12);
+  return { ok: true, bundle: { code, hash, bytes } };
 }
 function rebuildBindings(existing, env) {
   const bindings = [];
@@ -10042,7 +10062,7 @@ function buildDurableObjectPlan(existing) {
     migrations: { new_tag: INSTANT_TICK_MIGRATION_TAG, new_sqlite_classes: [INSTANT_TICK_CLASS] }
   };
 }
-async function handleSelfUpdate(request, env) {
+async function authorizeSelfUpdate(request, env) {
   const serverToken = env.AMSG_SERVER_TOKEN?.trim();
   if (!serverToken) {
     return fail(
@@ -10061,19 +10081,13 @@ async function handleSelfUpdate(request, env) {
       "\u6CA1\u914D CF_API_TOKEN\uFF0C\u6CA1\u6CD5\u81EA\u5DF1\u66F4\u65B0\u3002\u53BB Cloudflare \u5EFA\u4E00\u679A\u53EA\u52FE Workers Scripts \u2192 Edit \u7684 API Token\uFF0C\u52A0\u8FDB\u8FD9\u4E2A Worker \u7684\u53D8\u91CF\u91CC\u3002"
     );
   }
-  const scriptName = resolveScriptName(env, request.url);
-  if (!scriptName) {
-    return fail(
-      "SCRIPT_NAME_UNKNOWN",
-      "\u8BA4\u4E0D\u51FA\u8FD9\u4E2A Worker \u53EB\u4EC0\u4E48\uFF08\u591A\u534A\u662F\u5957\u4E86\u4EE3\u7406\u57DF\u540D\uFF09\u3002\u7ED9\u5B83\u52A0\u4E00\u6761 CF_SCRIPT_NAME \u53D8\u91CF\uFF0C\u503C\u586B Worker \u7684\u540D\u5B57\u3002"
-    );
-  }
+  return { ok: true, token };
+}
+async function performSelfUpdate(env, token, scriptName, bundle) {
   const located = await locateScript(env, token, scriptName);
   if (!located.ok) return fail("SCRIPT_NOT_LOCATED", located.message);
   const account = { id: located.accountId };
   const settings = { result: located.settings };
-  const bundle = await fetchLatestBundle();
-  if (!bundle.ok) return fail("BUNDLE_INVALID", bundle.message);
   const rebuilt = rebuildBindings(
     settings.result?.bindings ?? [],
     env
@@ -10113,17 +10127,496 @@ async function handleSelfUpdate(request, env) {
   if (!uploaded.ok) {
     return fail("UPLOAD_FAILED", `\u4E0A\u4F20\u5931\u8D25\uFF08${uploaded.detail}\uFF09\u3002\u5F53\u524D\u7248\u672C\u4E0D\u52A8\u3002`);
   }
-  const hash = (await sha256Hex(bundle.code)).slice(0, 12);
-  const bytes = new TextEncoder().encode(bundle.code).length;
   return {
     ok: true,
     code: "UPDATED",
     message: "\u5DF2\u7ECF\u66F4\u65B0\u5230\u6700\u65B0\u7248\u672C\u3002",
-    bundleHash: hash,
-    bundleBytes: bytes,
+    bundleHash: bundle.hash,
+    bundleBytes: bundle.bytes,
     scriptName
   };
 }
+async function handleSelfUpdate(request, env) {
+  const gate = await authorizeSelfUpdate(request, env);
+  if (!gate.ok) return gate;
+  const scriptName = resolveScriptName(env, request.url);
+  if (!scriptName) {
+    return fail(
+      "SCRIPT_NAME_UNKNOWN",
+      "\u8BA4\u4E0D\u51FA\u8FD9\u4E2A Worker \u53EB\u4EC0\u4E48\uFF08\u591A\u534A\u662F\u5957\u4E86\u4EE3\u7406\u57DF\u540D\uFF09\u3002\u7ED9\u5B83\u52A0\u4E00\u6761 CF_SCRIPT_NAME \u53D8\u91CF\uFF0C\u503C\u586B Worker \u7684\u540D\u5B57\u3002"
+    );
+  }
+  const fetched = await fetchLatestBundle(env);
+  if (!fetched.ok) return fail("BUNDLE_INVALID", fetched.message);
+  return performSelfUpdate(env, gate.token, scriptName, fetched.bundle);
+}
+
+// utils/amsgSelfUpdateState.ts
+var OUTCOMES = /* @__PURE__ */ new Set(["updated", "up_to_date", "failed"]);
+var SOURCES = /* @__PURE__ */ new Set(["cron", "client", "manual"]);
+var parseAmsgSelfUpdateState = (raw) => {
+  const value = raw;
+  if (!value || typeof value !== "object") return null;
+  if (typeof value.lastCheckAt !== "string" || Number.isNaN(Date.parse(value.lastCheckAt))) return null;
+  if (typeof value.lastOutcome !== "string" || !OUTCOMES.has(value.lastOutcome)) return null;
+  const error = value.lastError;
+  return {
+    lastCheckAt: value.lastCheckAt,
+    lastSource: typeof value.lastSource === "string" && SOURCES.has(value.lastSource) ? value.lastSource : "cron",
+    lastOutcome: value.lastOutcome,
+    bundleHash: typeof value.bundleHash === "string" && value.bundleHash ? value.bundleHash : null,
+    lastUpdatedAt: typeof value.lastUpdatedAt === "string" ? value.lastUpdatedAt : null,
+    lastError: error && typeof error === "object" && typeof error.code === "string" ? { code: error.code, message: typeof error.message === "string" ? error.message : "" } : null
+  };
+};
+
+// utils/amsgTickReport.ts
+var TICK_STALL_MS = 5 * 6e4;
+var LATE_START_MS = 3 * 6e4;
+var SAME_WRITE_TOLERANCE_MS = 5e3;
+var TICK_FAILURE_SERIES_GAP_MS = 3 * 6e4;
+var classifyOverdueTasks = (tasks, nowMs) => {
+  const verdicts = tasks.map((task) => {
+    const state = task.leaseUntilMs !== null && task.leaseUntilMs > nowMs ? "sending" : task.retryAfterMs !== null && task.retryAfterMs > nowMs ? "retry-wait" : "ready";
+    const readySinceMs = Math.max(task.nextSendAtMs, task.retryAfterMs ?? -Infinity);
+    const lastSettledMs = Math.max(
+      task.nextSendAtMs,
+      (task.createdAtMs ?? -Infinity) + SAME_WRITE_TOLERANCE_MS,
+      (task.currentErrorAtMs ?? -Infinity) + SAME_WRITE_TOLERANCE_MS
+    );
+    const lastStartedAtMs = task.updatedAtMs !== null && task.updatedAtMs > lastSettledMs ? task.updatedAtMs : null;
+    const unfinishedAttempt = state === "ready" && lastStartedAtMs !== null;
+    const lateStart = state === "sending" && lastStartedAtMs !== null && lastStartedAtMs - readySinceMs > LATE_START_MS;
+    const waitedTooLong = state === "ready" && nowMs - readySinceMs >= TICK_STALL_MS;
+    return {
+      state,
+      readySinceMs,
+      lastStartedAtMs,
+      unfinishedAttempt,
+      lateStart,
+      queuedBehind: false,
+      stuck: unfinishedAttempt || waitedTooLong
+    };
+  });
+  return verdicts.map(({ readySinceMs: _readySinceMs, ...verdict }, index) => {
+    if (verdict.state !== "ready" || verdict.unfinishedAttempt) return verdict;
+    const key = tasks[index].serializeKey;
+    if (!key) return verdict;
+    const blocked = verdicts.some((other, otherIndex) => otherIndex !== index && other.state === "sending" && tasks[otherIndex].serializeKey === key);
+    return blocked ? { ...verdict, queuedBehind: true, stuck: false } : verdict;
+  });
+};
+var judgeOverdueTasks = (tasks) => {
+  if (tasks.some((task) => task.verdict.stuck)) return "stalled";
+  if (tasks.some((task) => task.hasCurrentError || task.verdict.lateStart)) return "failing";
+  return "healthy";
+};
+
+// worker/amsg/src/tickReport.ts
+var MAX_OVERDUE_TASKS = 50;
+var MAX_RECENT_FAILURES = 10;
+var RECENT_FAILURE_WINDOW_MS = 24 * 60 * 6e4;
+var TASK_COLUMNS = `uuid, user_id, encrypted_payload, message_type, status, next_send_at,
+       retry_count, retry_after, lease_until, created_at, updated_at, last_error`;
+var parseMs = (value) => {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+};
+var toIso = (ms) => ms === null ? null : new Date(ms).toISOString();
+var parseLastError = (raw) => {
+  if (!raw) return null;
+  let value = null;
+  try {
+    const parsed = JSON.parse(raw);
+    value = parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return { at: null, occurrence: null, reason: raw, errorCode: null, pushStatus: null };
+  }
+  if (!value) return null;
+  const pick = (key) => typeof value?.[key] === "string" && value[key] ? value[key] : null;
+  const pushStatus = Number(value.pushStatus);
+  return {
+    at: pick("at"),
+    occurrence: pick("occurrence"),
+    reason: pick("reason") || "",
+    errorCode: pick("errorCode"),
+    pushStatus: Number.isFinite(pushStatus) && pushStatus > 0 ? pushStatus : null
+  };
+};
+var isCurrentOccurrence = (error, nextSendAtMs) => {
+  const occurrenceMs = parseMs(error.occurrence);
+  if (occurrenceMs !== null) return occurrenceMs === nextSendAtMs;
+  const atMs = parseMs(error.at);
+  return atMs !== null && atMs >= nextSendAtMs;
+};
+var createIdentityReader = (masterKey, serializeKeyOf) => {
+  const userKeys = /* @__PURE__ */ new Map();
+  return async (row) => {
+    const unknown = { charId: null, contactName: null, kind: null, serializeKey: null };
+    if (!masterKey || !row.user_id || !row.encrypted_payload) return unknown;
+    try {
+      let userKey = userKeys.get(row.user_id);
+      if (!userKey) {
+        userKey = deriveUserEncryptionKey(row.user_id, masterKey);
+        userKeys.set(row.user_id, userKey);
+      }
+      const payload = JSON.parse(await decryptFromStorage(row.encrypted_payload, await userKey));
+      const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : null;
+      return {
+        charId: typeof metadata?.charId === "string" ? metadata.charId : null,
+        contactName: typeof payload.contactName === "string" && payload.contactName ? payload.contactName : null,
+        kind: readTaskKind(metadata),
+        serializeKey: serializeKeyOf({ metadata })
+      };
+    } catch {
+      return unknown;
+    }
+  };
+};
+var readOverdueTasks = async (db, options) => {
+  const nowMs = options.nowMs ?? Date.now();
+  const rows = (await db.prepare(
+    `SELECT ${TASK_COLUMNS}
+         FROM scheduled_messages
+        WHERE status = 'pending' AND next_send_at <= ?
+        ORDER BY next_send_at ASC
+        LIMIT ?`
+  ).bind(new Date(nowMs).toISOString(), MAX_OVERDUE_TASKS + 1).all()).results || [];
+  const truncated = rows.length > MAX_OVERDUE_TASKS;
+  const readIdentity = createIdentityReader(options.masterKey, options.serializeKeyOf);
+  const prepared = (await Promise.all(rows.slice(0, MAX_OVERDUE_TASKS).map(async (row) => {
+    const nextSendAtMs = parseMs(row.next_send_at);
+    if (!row.uuid || nextSendAtMs === null) return null;
+    const lastError = parseLastError(row.last_error);
+    const currentError = lastError && isCurrentOccurrence(lastError, nextSendAtMs) ? lastError : null;
+    const identity = await readIdentity(row);
+    const facts = {
+      nextSendAtMs,
+      createdAtMs: parseMs(row.created_at),
+      updatedAtMs: parseMs(row.updated_at),
+      retryAfterMs: parseMs(row.retry_after),
+      leaseUntilMs: parseMs(row.lease_until),
+      currentErrorAtMs: currentError ? parseMs(currentError.at) : null,
+      serializeKey: identity.serializeKey
+    };
+    return { row: { ...row, uuid: row.uuid }, nextSendAtMs, currentError, identity, facts };
+  }))).filter((item) => item !== null);
+  const verdicts = classifyOverdueTasks(prepared.map((item) => item.facts), nowMs);
+  const tasks = prepared.map(({ row, nextSendAtMs, currentError, identity, facts }, index) => {
+    const verdict = verdicts[index];
+    return {
+      uuid: row.uuid,
+      charId: identity.charId,
+      contactName: identity.contactName,
+      kind: identity.kind,
+      messageType: row.message_type,
+      nextSendAt: new Date(nextSendAtMs).toISOString(),
+      state: verdict.state,
+      stuck: verdict.stuck,
+      retryCount: Number(row.retry_count) || 0,
+      retryAfter: toIso(facts.retryAfterMs),
+      lastStartedAt: toIso(verdict.lastStartedAtMs),
+      unfinishedAttempt: verdict.unfinishedAttempt,
+      lateStart: verdict.lateStart,
+      queuedBehind: verdict.queuedBehind,
+      lastError: currentError
+    };
+  });
+  return {
+    tasks,
+    truncated,
+    verdict: judgeOverdueTasks(tasks.map((task, index) => ({
+      verdict: verdicts[index],
+      hasCurrentError: task.lastError !== null
+    })))
+  };
+};
+var readRecentFailures = async (db, options) => {
+  const nowMs = options.nowMs ?? Date.now();
+  const sinceMs = nowMs - RECENT_FAILURE_WINDOW_MS;
+  const rows = (await db.prepare(
+    `SELECT ${TASK_COLUMNS}
+         FROM scheduled_messages
+        WHERE last_error IS NOT NULL
+          AND updated_at >= ?
+          AND message_type != 'instant'
+          AND (status = 'failed' OR (status = 'pending' AND next_send_at > ?))
+        ORDER BY updated_at DESC
+        LIMIT ?`
+  ).bind(new Date(sinceMs).toISOString(), new Date(nowMs).toISOString(), MAX_RECENT_FAILURES).all()).results || [];
+  const readIdentity = createIdentityReader(options.masterKey, options.serializeKeyOf);
+  const failures = await Promise.all(rows.map(async (row) => {
+    const error = parseLastError(row.last_error);
+    const atMs = parseMs(error?.at);
+    if (!row.uuid || !error || atMs === null || atMs < sinceMs) return null;
+    const identity = await readIdentity(row);
+    return {
+      uuid: row.uuid,
+      charId: identity.charId,
+      contactName: identity.contactName,
+      kind: identity.kind,
+      messageType: row.message_type,
+      outcome: row.status === "failed" ? "failed" : "skipped",
+      error
+    };
+  }));
+  return failures.filter((item) => item !== null);
+};
+var DIAGNOSTICS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS worker_diagnostics (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+)`;
+var readDiagnosticValue = async (db, key) => {
+  if (typeof db?.prepare !== "function") return null;
+  try {
+    const row = await db.prepare("SELECT value FROM worker_diagnostics WHERE key = ?").bind(key).first();
+    return typeof row?.value === "string" ? row.value : null;
+  } catch {
+    return null;
+  }
+};
+var writeDiagnosticValue = async (db, key, value, nowMs = Date.now()) => {
+  await db.prepare(DIAGNOSTICS_TABLE_SQL).run();
+  await db.prepare(
+    `INSERT INTO worker_diagnostics (key, value, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).bind(key, value, nowMs).run();
+};
+var TICK_FAILURE_KEY = "tick_failure";
+var TASK_WRITE_FAILURE_STATUSES = /* @__PURE__ */ new Set([
+  "claim_failed",
+  "retry_update_failed",
+  "stale_update_failed",
+  "post_send_cleanup_failed"
+]);
+var pickTickFailure = (outcome) => {
+  const value = outcome;
+  if (!value || typeof value !== "object") return null;
+  if (value.ok === false) {
+    const cause2 = value.cause;
+    return {
+      stage: typeof cause2?.stage === "string" && cause2.stage ? cause2.stage : "tick",
+      name: typeof cause2?.name === "string" && cause2.name ? cause2.name : "Error",
+      message: typeof cause2?.message === "string" ? cause2.message : "",
+      code: typeof cause2?.code === "string" && cause2.code ? cause2.code : null
+    };
+  }
+  const failedTasks = value.summary?.details?.failedTasks;
+  if (!Array.isArray(failedTasks)) return null;
+  const hit = failedTasks.find((entry) => TASK_WRITE_FAILURE_STATUSES.has(entry?.status));
+  if (!hit) return null;
+  const reason = typeof hit.reason === "string" ? hit.reason : "";
+  const updateError = typeof hit.updateError === "string" ? hit.updateError : "";
+  const rawMessage = updateError ? `${updateError}\uFF08\u672C\u6765\u8981\u8BB0\u4E0B\u7684\u5931\u8D25\u539F\u56E0\uFF1A${reason || "\u65E0"}\uFF09` : reason;
+  const cause = summarizeErrorCause({ name: "TaskWriteFailed", message: rawMessage }, "tick");
+  return { stage: hit.status, name: cause.name, message: cause.message ?? "", code: null };
+};
+var recordTickOutcome = async (db, outcome, nowMs = Date.now()) => {
+  const failure = pickTickFailure(outcome);
+  if (!failure || typeof db?.prepare !== "function") return;
+  try {
+    const previous = parseStoredTickFailure(await readDiagnosticValue(db, TICK_FAILURE_KEY));
+    const sameSeries = previous && previous.stage === failure.stage && previous.name === failure.name && nowMs - Date.parse(previous.lastAt) <= TICK_FAILURE_SERIES_GAP_MS;
+    const nowIso = new Date(nowMs).toISOString();
+    const record = {
+      ...failure,
+      firstAt: sameSeries ? previous.firstAt : nowIso,
+      lastAt: nowIso,
+      count: sameSeries ? previous.count + 1 : 1
+    };
+    await writeDiagnosticValue(db, TICK_FAILURE_KEY, JSON.stringify(record), nowMs);
+  } catch (error) {
+    console.warn("[amsg:tick-report] \u8FD9\u4E00\u8DF3\u7684\u62A5\u9519\u6CA1\u8BB0\u8FDB\u5E93", error);
+  }
+};
+var parseStoredTickFailure = (raw) => {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value.stage !== "string" || typeof value.firstAt !== "string" || typeof value.lastAt !== "string") {
+      return null;
+    }
+    return {
+      stage: value.stage,
+      name: typeof value.name === "string" ? value.name : "Error",
+      message: typeof value.message === "string" ? value.message : "",
+      code: typeof value.code === "string" ? value.code : null,
+      firstAt: value.firstAt,
+      lastAt: value.lastAt,
+      count: Number(value.count) || 1
+    };
+  } catch {
+    return null;
+  }
+};
+var readTickFailure = async (db, nowMs = Date.now()) => {
+  const record = parseStoredTickFailure(await readDiagnosticValue(db, TICK_FAILURE_KEY));
+  if (!record) return null;
+  return { ...record, ongoing: nowMs - Date.parse(record.lastAt) <= TICK_FAILURE_SERIES_GAP_MS };
+};
+var buildTickReport = async (db, options) => {
+  const nowMs = options.nowMs ?? Date.now();
+  const scoped = { ...options, nowMs };
+  const [overdue, recentFailures, tickFailure] = await Promise.all([
+    readOverdueTasks(db, scoped),
+    readRecentFailures(db, scoped),
+    readTickFailure(db, nowMs)
+  ]);
+  return {
+    now: new Date(nowMs).toISOString(),
+    tasks: overdue.tasks,
+    recentFailures,
+    tickFailure,
+    truncated: overdue.truncated
+  };
+};
+
+// worker/amsg/src/autoUpdate.ts
+var AUTO_UPDATE_CRON_INTERVAL_MS = 6 * 60 * 6e4;
+var AUTO_UPDATE_CLIENT_INTERVAL_MS = 30 * 6e4;
+var SELF_UPDATE_KEY = "self_update";
+var SCHEMA_ENSURED_KEY = "schema_ensured";
+var SCHEMA_ENSURE_RETRY_MS = 60 * 6e4;
+var readSelfUpdateState = async (db) => {
+  const raw = await readDiagnosticValue(db, SELF_UPDATE_KEY);
+  if (!raw) return null;
+  try {
+    return parseAmsgSelfUpdateState(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+};
+var writeSelfUpdateState = async (db, state, nowMs) => {
+  await writeDiagnosticValue(db, SELF_UPDATE_KEY, JSON.stringify(state), nowMs);
+};
+var markSchemaUnverified = async (db, nowMs) => {
+  await writeDiagnosticValue(db, SCHEMA_ENSURED_KEY, "", nowMs);
+};
+var applySelfUpdateResult = (previous, source, result, nowMs) => {
+  const nowIso = new Date(nowMs).toISOString();
+  if (result.ok) {
+    return {
+      lastCheckAt: nowIso,
+      lastSource: source,
+      lastOutcome: "updated",
+      bundleHash: result.bundleHash ?? previous?.bundleHash ?? null,
+      lastUpdatedAt: nowIso,
+      lastError: null
+    };
+  }
+  return {
+    lastCheckAt: nowIso,
+    lastSource: source,
+    lastOutcome: "failed",
+    bundleHash: previous?.bundleHash ?? null,
+    lastUpdatedAt: previous?.lastUpdatedAt ?? null,
+    lastError: { code: result.code, message: result.message }
+  };
+};
+var recordManualSelfUpdate = async (db, result, nowMs = Date.now()) => {
+  if (typeof db?.prepare !== "function") return;
+  try {
+    const previous = await readSelfUpdateState(db);
+    await writeSelfUpdateState(db, applySelfUpdateResult(previous, "manual", result, nowMs), nowMs);
+    if (result.ok) await markSchemaUnverified(db, nowMs);
+  } catch (error) {
+    console.warn("[amsg:auto-update] \u624B\u52A8\u66F4\u65B0\u7684\u7ED3\u679C\u6CA1\u8BB0\u8FDB\u5E93", error);
+  }
+};
+var runAutoUpdate = async (env, db, options) => {
+  const token = env.CF_API_TOKEN?.trim();
+  if (!token) return { action: "unsupported" };
+  const nowMs = options.nowMs ?? Date.now();
+  const previous = await readSelfUpdateState(db);
+  const minInterval = options.source === "cron" ? AUTO_UPDATE_CRON_INTERVAL_MS : AUTO_UPDATE_CLIENT_INTERVAL_MS;
+  if (previous && nowMs - Date.parse(previous.lastCheckAt) < minInterval) {
+    return { action: "throttled", state: previous };
+  }
+  const claimed = {
+    lastCheckAt: new Date(nowMs).toISOString(),
+    lastSource: options.source,
+    lastOutcome: previous?.lastOutcome ?? "up_to_date",
+    bundleHash: previous?.bundleHash ?? null,
+    lastUpdatedAt: previous?.lastUpdatedAt ?? null,
+    lastError: previous?.lastError ?? null
+  };
+  await writeSelfUpdateState(db, claimed, nowMs);
+  const settle = async (result2) => {
+    const state = applySelfUpdateResult(previous, options.source, result2, nowMs);
+    await writeSelfUpdateState(db, state, nowMs);
+    if (result2.ok) await markSchemaUnverified(db, nowMs);
+    return { action: state.lastOutcome, state };
+  };
+  if (!options.scriptName) {
+    return settle({
+      ok: false,
+      code: "SCRIPT_NAME_UNKNOWN",
+      message: "\u8BA4\u4E0D\u51FA\u8FD9\u4E2A Worker \u53EB\u4EC0\u4E48\u3002\u7ED9\u5B83\u52A0\u4E00\u6761 CF_SCRIPT_NAME \u53D8\u91CF\uFF0C\u503C\u586B Worker \u7684\u540D\u5B57\uFF0C\u81EA\u52A8\u66F4\u65B0\u624D\u77E5\u9053\u8BE5\u66F4\u65B0\u8C01\u3002"
+    });
+  }
+  const fetched = await fetchLatestBundle(env);
+  if (!fetched.ok) return settle({ ok: false, code: "BUNDLE_INVALID", message: fetched.message });
+  const bindingsComplete = Boolean(env.INSTANT_TICK);
+  if (previous?.bundleHash === fetched.bundle.hash && bindingsComplete) {
+    const state = {
+      ...claimed,
+      lastOutcome: "up_to_date",
+      bundleHash: fetched.bundle.hash,
+      lastError: null
+    };
+    await writeSelfUpdateState(db, state, nowMs);
+    return { action: "up_to_date", state };
+  }
+  if (previous?.bundleHash === fetched.bundle.hash) {
+    console.log("[amsg:auto-update] \u4EE3\u7801\u6CA1\u53D8\u4F46 INSTANT_TICK \u7ED1\u5B9A\u4E0D\u5728\uFF0C\u518D\u4F20\u4E00\u6B21\u628A\u7ED1\u5B9A\u8865\u4E0A");
+  }
+  const result = await performSelfUpdate(env, token, options.scriptName, fetched.bundle);
+  if (result.ok) {
+    console.log(`[amsg:auto-update] \u5DF2\u6362\u4E0A\u65B0\u4EE3\u7801 ${result.bundleHash}\uFF08${options.source} \u89E6\u53D1\uFF09`);
+  } else {
+    console.warn(`[amsg:auto-update] \u66F4\u65B0\u5931\u8D25 ${result.code}\uFF1A${result.message}`);
+  }
+  return settle(result);
+};
+var readSchemaMarker = async (db) => {
+  const raw = await readDiagnosticValue(db, SCHEMA_ENSURED_KEY);
+  if (!raw) return { ensuredFor: "", failedAtMs: null };
+  try {
+    const value = JSON.parse(raw);
+    return {
+      ensuredFor: typeof value?.ensuredFor === "string" ? value.ensuredFor : "",
+      failedAtMs: typeof value?.failedAtMs === "number" ? value.failedAtMs : null
+    };
+  } catch {
+    return { ensuredFor: "", failedAtMs: null };
+  }
+};
+var ensureSchemaOnce = async (db, schemaVersion, ensure, nowMs = Date.now()) => {
+  if (typeof db?.prepare !== "function") return "skipped";
+  const marker = await readSchemaMarker(db);
+  if (marker.ensuredFor === schemaVersion) return "skipped";
+  if (marker.failedAtMs !== null && nowMs - marker.failedAtMs < SCHEMA_ENSURE_RETRY_MS) return "skipped";
+  try {
+    const result = await ensure();
+    if (result.migrated) console.log(`[amsg:auto-update] \u8868\u7ED3\u6784\u5DF2\u6309 ${schemaVersion} \u8865\u9F50`);
+    if (!result.ok) {
+      console.warn(`[amsg:auto-update] \u8868\u7ED3\u6784\u8865\u4E0D\u9F50\uFF0C\u8FD8\u7F3A\uFF1A${result.missing.join("\u3001")}`);
+      await writeDiagnosticValue(db, SCHEMA_ENSURED_KEY, JSON.stringify({ ensuredFor: "", failedAtMs: nowMs }), nowMs);
+      return "failed";
+    }
+    await writeDiagnosticValue(db, SCHEMA_ENSURED_KEY, JSON.stringify({ ensuredFor: schemaVersion, failedAtMs: null }), nowMs);
+    return "ok";
+  } catch (error) {
+    console.warn("[amsg:auto-update] \u8868\u7ED3\u6784\u81EA\u67E5\u6CA1\u8DD1\u6210", error);
+    try {
+      await writeDiagnosticValue(db, SCHEMA_ENSURED_KEY, JSON.stringify({ ensuredFor: "", failedAtMs: nowMs }), nowMs);
+    } catch {
+    }
+    return "failed";
+  }
+};
 
 // worker/amsg/src/cronTrigger.ts
 var AMSG_CRON_EXPRESSION = "* * * * *";
@@ -13617,303 +14110,6 @@ function buildScheduleChangeResult(args) {
   };
 }
 
-// utils/amsgTickReport.ts
-var TICK_STALL_MS = 5 * 6e4;
-var LATE_START_MS = 3 * 6e4;
-var SAME_WRITE_TOLERANCE_MS = 5e3;
-var TICK_FAILURE_SERIES_GAP_MS = 3 * 6e4;
-var classifyOverdueTasks = (tasks, nowMs) => {
-  const verdicts = tasks.map((task) => {
-    const state = task.leaseUntilMs !== null && task.leaseUntilMs > nowMs ? "sending" : task.retryAfterMs !== null && task.retryAfterMs > nowMs ? "retry-wait" : "ready";
-    const readySinceMs = Math.max(task.nextSendAtMs, task.retryAfterMs ?? -Infinity);
-    const lastSettledMs = Math.max(
-      task.nextSendAtMs,
-      (task.createdAtMs ?? -Infinity) + SAME_WRITE_TOLERANCE_MS,
-      (task.currentErrorAtMs ?? -Infinity) + SAME_WRITE_TOLERANCE_MS
-    );
-    const lastStartedAtMs = task.updatedAtMs !== null && task.updatedAtMs > lastSettledMs ? task.updatedAtMs : null;
-    const unfinishedAttempt = state === "ready" && lastStartedAtMs !== null;
-    const lateStart = state === "sending" && lastStartedAtMs !== null && lastStartedAtMs - readySinceMs > LATE_START_MS;
-    const waitedTooLong = state === "ready" && nowMs - readySinceMs >= TICK_STALL_MS;
-    return {
-      state,
-      readySinceMs,
-      lastStartedAtMs,
-      unfinishedAttempt,
-      lateStart,
-      queuedBehind: false,
-      stuck: unfinishedAttempt || waitedTooLong
-    };
-  });
-  return verdicts.map(({ readySinceMs: _readySinceMs, ...verdict }, index) => {
-    if (verdict.state !== "ready" || verdict.unfinishedAttempt) return verdict;
-    const key = tasks[index].serializeKey;
-    if (!key) return verdict;
-    const blocked = verdicts.some((other, otherIndex) => otherIndex !== index && other.state === "sending" && tasks[otherIndex].serializeKey === key);
-    return blocked ? { ...verdict, queuedBehind: true, stuck: false } : verdict;
-  });
-};
-var judgeOverdueTasks = (tasks) => {
-  if (tasks.some((task) => task.verdict.stuck)) return "stalled";
-  if (tasks.some((task) => task.hasCurrentError || task.verdict.lateStart)) return "failing";
-  return "healthy";
-};
-
-// worker/amsg/src/tickReport.ts
-var MAX_OVERDUE_TASKS = 50;
-var MAX_RECENT_FAILURES = 10;
-var RECENT_FAILURE_WINDOW_MS = 24 * 60 * 6e4;
-var TASK_COLUMNS = `uuid, user_id, encrypted_payload, message_type, status, next_send_at,
-       retry_count, retry_after, lease_until, created_at, updated_at, last_error`;
-var parseMs = (value) => {
-  if (!value) return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-};
-var toIso = (ms) => ms === null ? null : new Date(ms).toISOString();
-var parseLastError = (raw) => {
-  if (!raw) return null;
-  let value = null;
-  try {
-    const parsed = JSON.parse(raw);
-    value = parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return { at: null, occurrence: null, reason: raw, errorCode: null, pushStatus: null };
-  }
-  if (!value) return null;
-  const pick = (key) => typeof value?.[key] === "string" && value[key] ? value[key] : null;
-  const pushStatus = Number(value.pushStatus);
-  return {
-    at: pick("at"),
-    occurrence: pick("occurrence"),
-    reason: pick("reason") || "",
-    errorCode: pick("errorCode"),
-    pushStatus: Number.isFinite(pushStatus) && pushStatus > 0 ? pushStatus : null
-  };
-};
-var isCurrentOccurrence = (error, nextSendAtMs) => {
-  const occurrenceMs = parseMs(error.occurrence);
-  if (occurrenceMs !== null) return occurrenceMs === nextSendAtMs;
-  const atMs = parseMs(error.at);
-  return atMs !== null && atMs >= nextSendAtMs;
-};
-var createIdentityReader = (masterKey, serializeKeyOf) => {
-  const userKeys = /* @__PURE__ */ new Map();
-  return async (row) => {
-    const unknown = { charId: null, contactName: null, kind: null, serializeKey: null };
-    if (!masterKey || !row.user_id || !row.encrypted_payload) return unknown;
-    try {
-      let userKey = userKeys.get(row.user_id);
-      if (!userKey) {
-        userKey = deriveUserEncryptionKey(row.user_id, masterKey);
-        userKeys.set(row.user_id, userKey);
-      }
-      const payload = JSON.parse(await decryptFromStorage(row.encrypted_payload, await userKey));
-      const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : null;
-      return {
-        charId: typeof metadata?.charId === "string" ? metadata.charId : null,
-        contactName: typeof payload.contactName === "string" && payload.contactName ? payload.contactName : null,
-        kind: readTaskKind(metadata),
-        serializeKey: serializeKeyOf({ metadata })
-      };
-    } catch {
-      return unknown;
-    }
-  };
-};
-var readOverdueTasks = async (db, options) => {
-  const nowMs = options.nowMs ?? Date.now();
-  const rows = (await db.prepare(
-    `SELECT ${TASK_COLUMNS}
-         FROM scheduled_messages
-        WHERE status = 'pending' AND next_send_at <= ?
-        ORDER BY next_send_at ASC
-        LIMIT ?`
-  ).bind(new Date(nowMs).toISOString(), MAX_OVERDUE_TASKS + 1).all()).results || [];
-  const truncated = rows.length > MAX_OVERDUE_TASKS;
-  const readIdentity = createIdentityReader(options.masterKey, options.serializeKeyOf);
-  const prepared = (await Promise.all(rows.slice(0, MAX_OVERDUE_TASKS).map(async (row) => {
-    const nextSendAtMs = parseMs(row.next_send_at);
-    if (!row.uuid || nextSendAtMs === null) return null;
-    const lastError = parseLastError(row.last_error);
-    const currentError = lastError && isCurrentOccurrence(lastError, nextSendAtMs) ? lastError : null;
-    const identity = await readIdentity(row);
-    const facts = {
-      nextSendAtMs,
-      createdAtMs: parseMs(row.created_at),
-      updatedAtMs: parseMs(row.updated_at),
-      retryAfterMs: parseMs(row.retry_after),
-      leaseUntilMs: parseMs(row.lease_until),
-      currentErrorAtMs: currentError ? parseMs(currentError.at) : null,
-      serializeKey: identity.serializeKey
-    };
-    return { row: { ...row, uuid: row.uuid }, nextSendAtMs, currentError, identity, facts };
-  }))).filter((item) => item !== null);
-  const verdicts = classifyOverdueTasks(prepared.map((item) => item.facts), nowMs);
-  const tasks = prepared.map(({ row, nextSendAtMs, currentError, identity, facts }, index) => {
-    const verdict = verdicts[index];
-    return {
-      uuid: row.uuid,
-      charId: identity.charId,
-      contactName: identity.contactName,
-      kind: identity.kind,
-      messageType: row.message_type,
-      nextSendAt: new Date(nextSendAtMs).toISOString(),
-      state: verdict.state,
-      stuck: verdict.stuck,
-      retryCount: Number(row.retry_count) || 0,
-      retryAfter: toIso(facts.retryAfterMs),
-      lastStartedAt: toIso(verdict.lastStartedAtMs),
-      unfinishedAttempt: verdict.unfinishedAttempt,
-      lateStart: verdict.lateStart,
-      queuedBehind: verdict.queuedBehind,
-      lastError: currentError
-    };
-  });
-  return {
-    tasks,
-    truncated,
-    verdict: judgeOverdueTasks(tasks.map((task, index) => ({
-      verdict: verdicts[index],
-      hasCurrentError: task.lastError !== null
-    })))
-  };
-};
-var readRecentFailures = async (db, options) => {
-  const nowMs = options.nowMs ?? Date.now();
-  const sinceMs = nowMs - RECENT_FAILURE_WINDOW_MS;
-  const rows = (await db.prepare(
-    `SELECT ${TASK_COLUMNS}
-         FROM scheduled_messages
-        WHERE last_error IS NOT NULL
-          AND updated_at >= ?
-          AND message_type != 'instant'
-          AND (status = 'failed' OR (status = 'pending' AND next_send_at > ?))
-        ORDER BY updated_at DESC
-        LIMIT ?`
-  ).bind(new Date(sinceMs).toISOString(), new Date(nowMs).toISOString(), MAX_RECENT_FAILURES).all()).results || [];
-  const readIdentity = createIdentityReader(options.masterKey, options.serializeKeyOf);
-  const failures = await Promise.all(rows.map(async (row) => {
-    const error = parseLastError(row.last_error);
-    const atMs = parseMs(error?.at);
-    if (!row.uuid || !error || atMs === null || atMs < sinceMs) return null;
-    const identity = await readIdentity(row);
-    return {
-      uuid: row.uuid,
-      charId: identity.charId,
-      contactName: identity.contactName,
-      kind: identity.kind,
-      messageType: row.message_type,
-      outcome: row.status === "failed" ? "failed" : "skipped",
-      error
-    };
-  }));
-  return failures.filter((item) => item !== null);
-};
-var DIAGNOSTICS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS worker_diagnostics (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-)`;
-var TICK_FAILURE_KEY = "tick_failure";
-var TASK_WRITE_FAILURE_STATUSES = /* @__PURE__ */ new Set([
-  "claim_failed",
-  "retry_update_failed",
-  "stale_update_failed",
-  "post_send_cleanup_failed"
-]);
-var pickTickFailure = (outcome) => {
-  const value = outcome;
-  if (!value || typeof value !== "object") return null;
-  if (value.ok === false) {
-    const cause2 = value.cause;
-    return {
-      stage: typeof cause2?.stage === "string" && cause2.stage ? cause2.stage : "tick",
-      name: typeof cause2?.name === "string" && cause2.name ? cause2.name : "Error",
-      message: typeof cause2?.message === "string" ? cause2.message : "",
-      code: typeof cause2?.code === "string" && cause2.code ? cause2.code : null
-    };
-  }
-  const failedTasks = value.summary?.details?.failedTasks;
-  if (!Array.isArray(failedTasks)) return null;
-  const hit = failedTasks.find((entry) => TASK_WRITE_FAILURE_STATUSES.has(entry?.status));
-  if (!hit) return null;
-  const reason = typeof hit.reason === "string" ? hit.reason : "";
-  const updateError = typeof hit.updateError === "string" ? hit.updateError : "";
-  const rawMessage = updateError ? `${updateError}\uFF08\u672C\u6765\u8981\u8BB0\u4E0B\u7684\u5931\u8D25\u539F\u56E0\uFF1A${reason || "\u65E0"}\uFF09` : reason;
-  const cause = summarizeErrorCause({ name: "TaskWriteFailed", message: rawMessage }, "tick");
-  return { stage: hit.status, name: cause.name, message: cause.message ?? "", code: null };
-};
-var recordTickOutcome = async (db, outcome, nowMs = Date.now()) => {
-  const failure = pickTickFailure(outcome);
-  if (!failure || typeof db?.prepare !== "function") return;
-  try {
-    await db.prepare(DIAGNOSTICS_TABLE_SQL).run();
-    const existing = await db.prepare("SELECT value FROM worker_diagnostics WHERE key = ?").bind(TICK_FAILURE_KEY).first();
-    const previous = parseStoredTickFailure(existing?.value);
-    const sameSeries = previous && previous.stage === failure.stage && previous.name === failure.name && nowMs - Date.parse(previous.lastAt) <= TICK_FAILURE_SERIES_GAP_MS;
-    const nowIso = new Date(nowMs).toISOString();
-    const record = {
-      ...failure,
-      firstAt: sameSeries ? previous.firstAt : nowIso,
-      lastAt: nowIso,
-      count: sameSeries ? previous.count + 1 : 1
-    };
-    await db.prepare(
-      `INSERT INTO worker_diagnostics (key, value, updated_at) VALUES (?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    ).bind(TICK_FAILURE_KEY, JSON.stringify(record), nowMs).run();
-  } catch (error) {
-    console.warn("[amsg:tick-report] \u8FD9\u4E00\u8DF3\u7684\u62A5\u9519\u6CA1\u8BB0\u8FDB\u5E93", error);
-  }
-};
-var parseStoredTickFailure = (raw) => {
-  if (!raw) return null;
-  try {
-    const value = JSON.parse(raw);
-    if (!value || typeof value.stage !== "string" || typeof value.firstAt !== "string" || typeof value.lastAt !== "string") {
-      return null;
-    }
-    return {
-      stage: value.stage,
-      name: typeof value.name === "string" ? value.name : "Error",
-      message: typeof value.message === "string" ? value.message : "",
-      code: typeof value.code === "string" ? value.code : null,
-      firstAt: value.firstAt,
-      lastAt: value.lastAt,
-      count: Number(value.count) || 1
-    };
-  } catch {
-    return null;
-  }
-};
-var readTickFailure = async (db, nowMs = Date.now()) => {
-  try {
-    const row = await db.prepare("SELECT value FROM worker_diagnostics WHERE key = ?").bind(TICK_FAILURE_KEY).first();
-    const record = parseStoredTickFailure(row?.value);
-    if (!record) return null;
-    return { ...record, ongoing: nowMs - Date.parse(record.lastAt) <= TICK_FAILURE_SERIES_GAP_MS };
-  } catch {
-    return null;
-  }
-};
-var buildTickReport = async (db, options) => {
-  const nowMs = options.nowMs ?? Date.now();
-  const scoped = { ...options, nowMs };
-  const [overdue, recentFailures, tickFailure] = await Promise.all([
-    readOverdueTasks(db, scoped),
-    readRecentFailures(db, scoped),
-    readTickFailure(db, nowMs)
-  ]);
-  return {
-    now: new Date(nowMs).toISOString(),
-    tasks: overdue.tasks,
-    recentFailures,
-    tickFailure,
-    truncated: overdue.truncated
-  };
-};
-
 // worker/amsg/src/nativeFcm.ts
 var accessTokenCache = null;
 var utf83 = new TextEncoder();
@@ -15592,7 +15788,7 @@ var readServerVersion = async (request, env) => {
   }
 };
 var src_default = {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const pathname = new URL(request.url).pathname.replace(/\/+$/, "") || "/";
     const method = request.method.toUpperCase();
     if (pathname.endsWith("/config-check")) {
@@ -15609,9 +15805,47 @@ var src_default = {
           // 正常，而门牌永远不更新。报的是**这份代码有没有**，不是版本号：自更新永远由
           // 旧代码执行，版本号对上了不代表新逻辑真的在跑。
           backgroundJobs: true,
-          workerVersion: AMSG_BUNDLE_VERSION
+          workerVersion: AMSG_BUNDLE_VERSION,
+          // 自动更新：有没有这个能力（配没配 CF_API_TOKEN，不回值）+ 最近一次检查的结果。
+          // 读的是诊断表，D1 没绑上时读不到就是 null，不影响上面那些照常回答。
+          selfUpdate: {
+            supported: Boolean(env.CF_API_TOKEN?.trim()),
+            state: await readSelfUpdateState(env.DB)
+          }
         }
       });
+    }
+    if (pathname.endsWith("/self-update/check")) {
+      if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+      if (method !== "POST") {
+        return jsonWithCors(405, {
+          success: false,
+          error: { code: "METHOD_NOT_ALLOWED", message: "/self-update/check \u53EA\u63A5\u53D7 POST" }
+        });
+      }
+      const gate = await authorizeSelfUpdate(request, env);
+      if (!gate.ok) {
+        return jsonWithCors(gate.code === "CF_TOKEN_MISSING" ? 400 : 401, {
+          success: false,
+          error: { code: gate.code, message: gate.message }
+        });
+      }
+      const db = env.DB;
+      if (typeof db?.prepare !== "function") {
+        return jsonWithCors(503, {
+          success: false,
+          error: { code: "WORKER_CONFIG_MISSING", message: "\u6CA1\u7ED1 D1\uFF0C\u8BB0\u4E0D\u4E0B\u68C0\u67E5\u7ED3\u679C\uFF0C\u5148\u628A DB \u7ED1\u4E0A\u3002" }
+        });
+      }
+      const check = runAutoUpdate(env, db, {
+        source: "client",
+        scriptName: resolveScriptName(env, request.url)
+      }).catch((error) => {
+        console.warn("[amsg:auto-update] \u51B7\u542F\u52A8\u89E6\u53D1\u7684\u68C0\u67E5\u6CA1\u8DD1\u5B8C", error);
+      });
+      if (ctx?.waitUntil) ctx.waitUntil(check);
+      else await check;
+      return jsonWithCors(202, { success: true, data: { accepted: true } });
     }
     if (pathname.endsWith("/debug")) {
       if (method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -15639,6 +15873,7 @@ var src_default = {
         });
       }
       const result = await handleSelfUpdate(request, env);
+      await recordManualSelfUpdate(env.DB, result);
       return jsonWithCors(result.ok ? 200 : 400, {
         success: result.ok,
         data: result.ok ? result : void 0,
@@ -15738,8 +15973,17 @@ var src_default = {
       console.error(`[amsg] \u5B9A\u65F6\u4EFB\u52A1\u6574\u8F6E\u8DF3\u8FC7\uFF1A${report.message}`);
       return;
     }
+    await ensureSchemaOnce(env.DB, SCHEMA_VERSION, () => upstream.ensureSchema(env));
     const outcome = await upstream.scheduled(event, env);
     await recordTickOutcome(env.DB, outcome);
+    try {
+      await runAutoUpdate(env, env.DB, {
+        source: "cron",
+        scriptName: env.CF_SCRIPT_NAME?.trim() || null
+      });
+    } catch (error) {
+      console.warn("[amsg:auto-update] \u8FD9\u4E00\u8DF3\u7684\u81EA\u52A8\u66F4\u65B0\u68C0\u67E5\u6CA1\u8DD1\u5B8C", error);
+    }
   }
 };
 export {
